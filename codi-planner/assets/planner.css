@@ -1,0 +1,269 @@
+/* LIST VIEW */
+
+.planner-list {
+	display: flex;
+	flex-direction: column;
+	justify-content: top;
+	margin: 0;
+}
+
+.planner-list .series {
+	width: 100%;
+	margin: 0 0 30px 0;
+	font-size: 0.9em;
+}
+
+.planner-list .series .item {
+	margin: 0;
+	padding: 12px;
+}
+
+.planner-list .series .item.active {
+	background: #eee;
+	border-bottom: 1px solid #ddd;
+}
+
+.planner-list .posts {
+	width: 100%;
+	margin: 0;
+	padding: 20px;
+	background: #eee;
+	border-bottom: 1px solid #ddd;
+}
+
+.planner-list .posts .sortable {
+	margin-bottom: 20px;
+}
+
+.planner-list .posts .item,
+.planner-list .posts .none,
+.planner-list .posts .add,
+.planner-list .discuss {
+	max-width: 350px;
+	margin: 0 auto;
+}
+
+.planner-list .posts .item {
+	background: #ddd;
+	border: 1px solid #ccc;
+	border-radius: 10px;
+	box-shadow: 0 5px 3px -2px #bbb;
+	margin-bottom: 20px;
+	padding: 12px;
+}
+
+.planner-list .posts .item:last-of-type {
+	margin-bottom: 0;
+}
+
+.planner-list .posts .none {
+	margin-bottom: 20px;
+}
+
+.planner-list .posts .info {
+	margin-top: 0;
+	text-align: left;
+	font-size: 0.85em;
+}
+
+.planner-list .posts .info > *::after {
+	content: ' \b7 ';
+}
+
+.planner-list .posts .info > *:last-of-type::after {
+	content: '';
+}
+
+.planner-list .discuss {
+	margin-top: 10px;
+	margin-bottom: 10px;
+}
+
+.planner-list .discuss .notes {
+	font-size: 0.85em;
+}
+
+
+/* POST VIEW */
+
+.planner-post h4,
+.planner-post .submit {	
+	margin: 30px 0 0 0;
+}
+
+.planner-post p,
+.planner-post ol,
+.planner-post .wp-editor-wrap {
+	margin: 10px 0 0 0;
+}
+
+.planner-post .wp-editor-container {
+	margin: 0;
+}
+
+.planner-post li {
+	margin-top: 5px;
+	margin-bottom: 0;
+}
+
+.planner-post .back {
+	font-size: 0.9em;
+}
+
+.planner-post .add {
+	margin-top: 20px;
+}
+
+.planner-post .submitted {
+	padding: 15px;
+	background: #e8f6fc;
+	border: 1px solid #2d7aba;
+}
+
+.planner-post .published {
+	padding: 15px;
+	background: #edfce8;
+	border: 1px solid #50ba2d;
+}
+
+
+/* LINKS */
+
+.planner .add a {
+	color: red;
+}
+
+
+/* FILTERS */
+
+.planner-filters {
+	text-align: right;
+	margin: 0 0 15px 0;
+}
+
+.planner-filters a {
+	font-size: 0.9em;
+	margin-left: 15px;
+}
+
+.planner-filters .active {
+	font-weight: bold;
+}
+
+
+/* NOTICE */
+
+.planner-notice {
+	position: fixed;
+	bottom: 0; left: 0;
+	width: 100%;
+	margin: 0;
+	padding: 15px;
+	background: #e4ffcf;
+	text-align: center;
+	z-index: 999;
+}
+
+.planner-notice.error {
+	background: #fcbaa2;
+}
+
+
+/* OVERLAY */
+
+.planner-overlay {
+	display: flex;
+	align-items: center;
+	position: fixed;
+	top: 0; left: 0;
+	width: 100%;
+	height: 100%;
+	padding: 0;
+	margin: 0;
+	background: rgba(0, 0, 0, 0.5);
+	z-index: 990;
+}
+
+.planner-overlay .inner {
+	position: relative;
+	width: 90%;
+	max-width: 500px;
+	margin: auto;
+	color: #3c434a;
+	background: var(--body-background);
+	border-radius: 4px;
+}
+
+.planner-overlay .head {
+	display: flex;
+	align-items: center;
+	font-size: 1.2em;
+	font-weight: bold;
+	padding: 5px 15px;
+	margin: 0;
+}
+
+.planner-overlay .body {
+	margin: 0;
+	padding: 15px;
+    max-height: calc(100vh - 20px);
+    overflow-y: auto;
+}
+
+.planner-overlay .close {
+	cursor: pointer;
+	font-size: 1.2em;
+	font-weight: normal;
+	margin: 0 0 0 auto;
+}
+
+
+/* ANIMATION */
+
+.planner-animate {
+	transition: transform 300ms ease-in-out, opacity 300ms ease-in-out;
+}
+
+.planner-animate.none {
+	opacity: 0.99;
+}
+
+.fade.out, .fade.planner-hidden {
+	opacity: 0;
+}
+
+.planner-hidden {
+	visibility: hidden;
+	width: 0 !important;
+	height: 0 !important;
+	margin: 0 !important;
+	padding: 0 !important;
+	font-size: 0 !important;
+	border: none !important;
+}
+
+.planner-hidden::before, .planner-hidden::after, .planner-hidden > * {
+	display: none !important;
+}
+
+
+/* MEDIA QUERIES */
+
+@media(min-width: 768px) {
+
+	.planner-list {
+		flex-direction: row;
+	}
+
+	.planner-list .series {
+		max-width: 250px;
+		margin-bottom: 0;
+	}
+
+	.planner-list .scroller {
+		max-height: 350px;
+		overflow-y: auto;
+		padding-bottom: 5px;
+	}
+
+}

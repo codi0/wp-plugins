@@ -1,0 +1,22 @@
+.roundup-list {
+
+}
+
+.roundup-list .link {
+	font-size: 1.0em;
+	margin: 0;
+}
+
+.roundup-list .snippet {
+	margin: 5px 0 0 0;
+	font-size: 0.85em;
+}
+
+.roundup-list .about {
+	margin: 5px 0 0 0;
+	font-size: 0.85em;
+}
+
+.roundup-list .domain {
+	color: green;
+}

@@ -1,0 +1,105 @@
+/* TABLES */
+
+.roundup table {
+	width: 100%;
+	margin-top: 10px;
+}
+
+.roundup td:first-child {
+	width: 90px;
+}
+
+.roundup td [type="text"],
+.roundup td textarea {
+	max-width: 400px;
+	width: 100%;
+	margin-bottom: 10px;
+}
+
+.roundup td textarea {
+	height: 90px;
+}
+
+.roundup td [name="roundup"] {
+	width: 100px;
+}
+
+
+/* FILTERS */
+
+.filters {
+	margin: 10px 0;
+	background: #ddd;
+	padding: 10px;
+}
+
+.filters .f {
+	display: inline;
+}
+
+.filters .f + .f {
+	margin: 0 0 0 10px;
+}
+
+@media(max-width: 620px) {
+
+	.filters .f {
+		display: block;
+	}
+
+	.filters .f + .f {
+		margin: 10px 0 0 0;
+	}
+
+	.filters span {
+		display: inline-block;
+		width: 70px;
+	}
+
+	.stories td:nth-of-type(3) {
+		display: none;
+	}
+
+}
+
+
+/* LIST STORIES */
+
+.stories {
+	margin-top: 10px;
+}
+
+.stories td:first-child {
+	width: auto;
+}
+
+.stories .item textarea {
+	max-width: 100%;
+	width: 100%;
+	height: 60px;
+}
+
+.stories .item .link {
+	font-size: 1.3em;
+}
+
+.stories .item .snippet {
+	font-size: 1.1em;
+	margin-top: 5px;
+}
+
+.stories .item .meta {
+	margin-top: 5px;
+}
+
+.stories .item .meta span {
+	color: green;
+}
+
+
+/* MANAGE FEEDS */
+
+[name="feeds"] {
+	width: 100%;
+	height: 200px;
+}
