@@ -88,7 +88,7 @@ function codi_restrict_redirect() {
 		return;
 	}
 	//filter url
-	$url = apply_filters(__FUNCTION__, $rules['action'] ?: wp_login_url(), $url);
+	$url = apply_filters(__FUNCTION__, $rules['action'] ?: wp_login_url());
 	//target is login?
 	if(stripos($url, 'login') !== false) {
 		//add redirect?
