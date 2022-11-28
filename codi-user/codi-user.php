@@ -5,7 +5,7 @@ Plugin Name: Codi User
 Description: Render and extend user login, registration, password and profile forms using shortcodes.
 Version: 1.0.0
 Author: Codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;

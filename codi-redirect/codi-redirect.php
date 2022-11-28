@@ -5,7 +5,7 @@ Plugin Name: Codi Redirect
 Description: Redirect any WordPress url to any other url.
 Version: 1.0.0
 Author: codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;

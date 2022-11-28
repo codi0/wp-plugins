@@ -5,7 +5,7 @@ Plugin Name: Codi Vars
 Description: Create variables that can be used as shortcodes in post content and blocks.
 Version: 1.0.0
 Author: codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;

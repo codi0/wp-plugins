@@ -5,7 +5,7 @@ Plugin Name: Codi Uninstaller
 Description: Uninstall WordPress with just a couple of clicks!
 Version: 1.0.1
 Author: codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;

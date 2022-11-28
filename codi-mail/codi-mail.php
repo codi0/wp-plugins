@@ -5,7 +5,7 @@ Plugin Name: Codi Mail
 Description: Send WordPress emails using an SMTP email provider.
 Version: 1.0.0
 Author: codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;

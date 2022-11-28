@@ -5,7 +5,7 @@ Plugin Name: Codi Post Series
 Description: Group and link posts together in series.
 Version: 1.0.0
 Author: Codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;

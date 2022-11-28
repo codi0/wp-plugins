@@ -5,7 +5,7 @@ Plugin Name: Codi Restrict
 Description: Restrict post content by user role
 Version: 1.0.0
 Author: codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 
@@ -88,7 +88,7 @@ function codi_restrict_redirect() {
 		return;
 	}
 	//filter url
-	$url = apply_filters(__FUNCTION__, $rules['action'] ?: wp_login_url(), $post);
+	$url = apply_filters(__FUNCTION__, $rules['action'] ?: wp_login_url(), $url);
 	//target is login?
 	if(stripos($url, 'login') !== false) {
 		//add redirect?

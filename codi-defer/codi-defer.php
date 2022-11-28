@@ -5,7 +5,7 @@ Plugin Name: Codi JS Defer
 Description: Automatically defer all javascript, including include js.
 Version: 1.0.0
 Author: codi0
-Author URI: https://github.com/codi-si/wp
+Author URI: https://github.com/codi0/wp-plugins/
 */
 
 defined('ABSPATH') or die;
