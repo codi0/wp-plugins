@@ -35,6 +35,11 @@ function codi_mail_driver_ses($to, $subject, $message, $headers = '', $attachmen
 	}
 	//set to
 	foreach($to as $t) {
+		//remove whitespace?
+		if(strpos($t, '<') === false) {
+			$t = preg_replace('/\s+/', '', $t);
+		}
+		//add recipient?
 		$msg->addTo($t);
 	}
 	//set subject
@@ -86,7 +91,7 @@ function codi_mail_driver_ses_admin(array $opts) {
 	echo '<tr><td>About</td><td style="font-size:0.9em; font-style:italic;">This uses the Amazon API to send emails, in cases where SMTP ports are blocked by your server: <a href="https://blog.mailtrap.io/amazon-ses-explained/#Step-by-Step_setup" target="_blank">Amazon SES setup guide</a></td></tr>' . "\n";
 	echo '<tr><td>Region</td><td><input type="text" name="mail_opts[host]" size="50" value="' . esc_attr($opts['host']) . '"></td></tr>' . "\n";
 	echo '<tr><td>Access key ID</td><td><input type="text" name="mail_opts[username]" size="50" value="' . esc_attr($opts['username']) . '"></td></tr>' . "\n";
-	echo '<tr><td>Secret access key</td><td><input type="text" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
+	echo '<tr><td>Secret access key</td><td><input type="password" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
 }
 
 //filter options

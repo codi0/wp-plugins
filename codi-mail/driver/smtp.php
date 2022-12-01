@@ -233,6 +233,9 @@ function codi_mail_driver_smtp( $to, $subject, $message, $headers = '', $attachm
                         $address        = $matches[2];
                     }
                 }
+                
+                //remove whitespace
+                $address = preg_replace('/\s+/', '', $address);
  
                 switch ( $address_header ) {
                     case 'to':

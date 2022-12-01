@@ -5,7 +5,7 @@ Plugin Name: Codi Mail
 Description: Send WordPress emails using an SMTP email provider.
 Version: 1.0.0
 Author: codi0
-Author URI: https://github.com/codi0/wp-plugins/
+Author URI: https://codi.io
 */
 
 defined('ABSPATH') or die;
@@ -123,7 +123,7 @@ function codi_mail_admin_options() {
 	}
 	//generate html
 	echo '<div class="wrap">' . "\n";
-	echo '<h2>' . __('SMTP Mail') . ' <small>(by <a href="https://github.com/codi-si/wp" target="_blank">codi0</a>)</small></h2>' . "\n";
+	echo '<h2>' . __('SMTP Mail') . ' <small>(by <a href="https://codi.io" target="_blank">codi0</a>)</small></h2>' . "\n";
 	echo '<p>Improve email deliverabilty by sending them through an SMTP server. Add your settings below, then send a test email to verify.</p>' . "\n";
 	echo '<form name="mail_opts" method="post" action="#mail_opts">' . "\n";
 	wp_nonce_field($page);
@@ -138,7 +138,7 @@ function codi_mail_admin_options() {
 		echo '<tr><td>Port</td><td><input type="text" name="mail_opts[port]" size="5" value="' . esc_attr($opts['port']) . '"></td></tr>' . "\n";
 		echo '<tr><td>Protocol</td><td><input type="text" name="mail_opts[protocol]" size="5" value="' . esc_attr($opts['protocol']) . '"></td></tr>' . "\n";
 		echo '<tr><td>Username</td><td><input type="text" name="mail_opts[username]" size="50" value="' . esc_attr($opts['username']) . '"></td></tr>' . "\n";
-		echo '<tr><td>Password</td><td><input type="text" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
+		echo '<tr><td>Password</td><td><input type="password" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
 	}
 	echo '<tr><td>From email</td><td><input type="text" name="mail_opts[from]" size="50" value="' . esc_attr($opts['from']) . '"></td></tr>' . "\n";
 	echo '</table>' . "\n";
