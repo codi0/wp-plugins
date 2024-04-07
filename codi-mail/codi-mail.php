@@ -123,7 +123,7 @@ function codi_mail_admin_options() {
 	}
 	//generate html
 	echo '<div class="wrap">' . "\n";
-	echo '<h2>' . __('SMTP Mail') . ' <small>(by <a href="https://codi.io" target="_blank">codi0</a>)</small></h2>' . "\n";
+	echo '<h2>' . __('SMTP Mail') . '</h2>' . "\n";
 	echo '<p>Improve email deliverabilty by sending them through an SMTP server. Add your settings below, then send a test email to verify.</p>' . "\n";
 	echo '<form name="mail_opts" method="post" action="#mail_opts">' . "\n";
 	wp_nonce_field($page);

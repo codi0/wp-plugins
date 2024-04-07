@@ -17,13 +17,35 @@ add_action('init', function() {
 	if(!is_admin() && $GLOBALS['pagenow'] !== 'wp-login.php') {
 		//is not logged in?
 		if(!is_user_logged_in()) {
-			//get file
-			$__file = __DIR__ . '/tpl/soon.tpl';
-			//file exists?
-			if(is_file($__file)) {
-				include($__file);
-				exit();
+			//has cookie?
+			if(!isset($_COOKIE['soon']) || $_COOKIE['soon'] !== 'preview') {
+				//has preview?
+				if(isset($_GET['preview'])) {
+					//set cookie
+					setcookie('soon', 'preview', 0, '/');
+				} else {
+					//get blog ID
+					$blog_id = get_current_blog_id();
+					//list files
+					$__files = [];
+					//add blog ID
+					$__files[] = WP_CONTENT_DIR . '/soon-' . $blog_id . '.tpl';
+					//add wp-content regular?
+					if(!is_multisite()) {
+						$__files[] = WP_CONTENT_DIR . '/soon.tpl';
+					}
+					//add fallback
+					$__files[] = __DIR__ . '/tpl/soon.tpl';
+					//loop through files
+					foreach($__files as $__file) {
+						//file exists?
+						if(is_file($__file)) {
+							include($__file);
+							exit();
+						}
+					}
+				}
 			}
 		}
 	}
-});
+}, -99);
