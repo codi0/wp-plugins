@@ -95,8 +95,8 @@ add_filter('codi_dom_frontend_html', function($html) {
 		return $match[0];
 	}, $html);
 	//add loader
-	$html = preg_replace('/<body([^\>]*)>/i', '<body$1>' . "\n" . '<div id="splash-loader"></div>', $html);
-	$html = str_replace('</head>', file_get_contents(__DIR__ . '/tpl/splash-loader.tpl') . "\n" . '</head>', $html);
+	$html = preg_replace('/<body([^\>]*)>/i', '<body$1>' . "\n" . '<div id="splash"><div class="spinner"></div></div>', $html);
+	$html = str_replace('</head>', file_get_contents(__DIR__ . '/tpl/splash.tpl') . "\n" . '</head>', $html);
 	//add canonical?
 	if($post && stripos($html, 'rel="canonical"') === false) {
 		$link = '<link rel="canonical" href="' . get_permalink($post->ID) . '">';

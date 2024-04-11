@@ -81,7 +81,7 @@
 		parts.push((screen.height > screen.width) ? screen.height+'x'+screen.width : screen.width+'x'+screen.height);
 		parts.push(new Date().getTimezoneOffset() || 0);
 		parts.push(canvasUrl());
-		return 'CID.' + cyrb53(parts.join(','));
+		return 'ID.' + cyrb53(parts.join(','));
 	})();
 
 	//set globals

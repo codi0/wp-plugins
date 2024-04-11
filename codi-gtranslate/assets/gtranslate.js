@@ -1,25 +1,26 @@
 window.addEventListener('load', function() {
 
-	//set vars
 	var id = 'gTranslator';
-	var cb = 'gTranslateInit';
 	var el = document.getElementById(id);
 
-	//callback function
-	window.gTranslateInit = function() {
-		new google.translate.TranslateElement({ pageLanguage: 'en' }, id);
-	}
+	var fn = function(e) {
+		if(window.gTranslateInit) return;
+		window.gTranslateInit = function() { new google.translate.TranslateElement({ pageLanguage: 'en' }, id) }
+		var scripts = document.getElementsByTagName('script');
+		var s = document.createElement('script'); s.async = true;
+		s.src = 'https://translate.google.com/translate_a/element.js?cb=gTranslateInit';
+		s.onload = function() { e && setTimeout(function() { el.scrollIntoView(true) }, 100) }
+		scripts[scripts.length-1].parentNode.appendChild(s);
+		el.innerHTML = '';
+	};
 	
-	//create el?
 	if(!el) {
 		el = document.createElement('div'); el.id = id;
 		(document.querySelector('footer') || document.querySelector('body')).appendChild(el);
 	}
-
-	//load script
-	var scripts = document.getElementsByTagName('script');
-	var s = document.createElement('script'); s.async = true;
-	s.src = 'https://translate.google.com/translate_a/element.js?cb=' + cb;
-	scripts[scripts.length-1].parentNode.appendChild(s);
+	
+	el.innerHTML = '<select style="font-size:0.85em;"><option>Select language</option></select>';
+	el.addEventListener('click', fn);
+	document.cookie.indexOf('googtrans=') >=0 && fn();
 
 });
