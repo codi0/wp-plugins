@@ -2,7 +2,7 @@
 
 /*
 Plugin Name: Codi Google Analytics
-Description: No cookie implementation of GA4 tracking
+Description: Implementation of GA4 tracking, respecting Do Not Track header
 Version: 1.0.0
 Author: codi0
 Author URI: https://github.com/codi0/wp-plugins/
@@ -62,7 +62,7 @@ add_action('init', function() {
 	//add tracking code?
 	if($data['id'] && ($data['admin'] || !is_admin()) && !$skip_role) {
 		//format code
-		$code = file_get_contents(__DIR__ . '/assets/ga4.js');
+		$code = file_get_contents(__DIR__ . '/assets/ga4-dnt.js');
 		$code = str_replace('G-XXXXXXXXXX', $data['id'], $code);
 		//queue script
 		wp_register_script('ga4', false);

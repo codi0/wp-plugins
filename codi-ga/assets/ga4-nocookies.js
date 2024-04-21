@@ -2,40 +2,10 @@
 
 	//set vars
 	var cookies = {};
+	var clientId = null;
+	var disallow = [ '_ga', 'ar_rand' ];
 	var opd = Object.getOwnPropertyDescriptor;
 	var dc = opd ? (opd(Document.prototype, 'cookie') || opd(HTMLDocument.prototype, 'cookie')) : null;
-	
-	//cookieless tracking possible?
-	if(!dc || !dc.configurable || !Object.defineProperty) {
-		return;
-	}
-
-	//property IDs to array?
-	if(typeof propertyIds == 'string') {
-		propertyIds = propertyIds ? propertyIds.split(',') : [];
-	}
-
-	//overload document.cookie
-	Object.defineProperty(document, 'cookie', {
-		get: function() {
-			var stored = dc.get.call(document);
-			var arr = stored ? stored.split('; ') : [];
-			var local = Object.values(cookies);
-			for(var i=0; i < local.length; i++) {
-				arr.push(local[i]);
-			}
-			return arr.join('; ');
-		},
-		set: function(value) {
-			if(value.indexOf('_ga') == 0) {
-				value = value.split(';')[0];
-				cookies[value.split('=')[0]] = value;
-			} else {
-				dc.set.call(document, value);
-			}
-			return value;
-		}
-	});
 
 	//hash function
 	var cyrb53 = function(str, seed=0) {
@@ -50,7 +20,7 @@
 		h2  = Math.imul(h2 ^ (h2 >>> 16), 2246822507);
 		h2 ^= Math.imul(h1 ^ (h1 >>> 13), 3266489909);
 		return 4294967296 * (2097151 & h2) + (h1 >>> 0);
-	}
+	};
 
 	//generaate canvas URL
 	var canvasUrl = function() {
@@ -70,10 +40,10 @@
 			res = canvas.toDataURL();
 		}
 		return res;
-	}
+	};
 
 	//generate client ID
-	var clientId = (function() {
+	var genCid = function() {
 		var parts = [];
 		parts.push((navigator.userAgent || '').toLowerCase().replace(/[^a-z]/g, ''));
 		parts.push((navigator.language || '').toLowerCase());
@@ -82,15 +52,56 @@
 		parts.push(new Date().getTimezoneOffset() || 0);
 		parts.push(canvasUrl());
 		return 'ID.' + cyrb53(parts.join(','));
-	})();
+	};
+
+	//can overwrite dc?
+	if(dc && dc.configurable && Object.defineProperty) {
+	
+		//set client ID
+		clientId = genCid();
+
+		//overload property
+		Object.defineProperty(document, 'cookie', {
+			get: function() {
+				var stored = dc.get.call(document);
+				var arr = stored ? stored.split('; ') : [];
+				var local = Object.values(cookies);
+				for(var i=0; i < local.length; i++) {
+					arr.push(local[i]);
+				}
+				return arr.join('; ');
+			},
+			set: function(value) {
+				if(disallow.includes(value.split('=')[0])) {
+					value = value.split(';')[0];
+					cookies[value.split('=')[0]] = value;
+				} else {
+					dc.set.call(document, value);
+				}
+				return value;
+			}
+		});
+
+	}
 
 	//set globals
 	window.dataLayer = window.dataLayer || [];
 	window.gtag = window.gtag || function() { dataLayer.push(arguments) }
-	
-	//set config
+
+	//property IDs to array?
+	if(typeof propertyIds == 'string') {
+		propertyIds = propertyIds ? propertyIds.split(',') : [];
+	}
+
+	//set date
 	gtag('js', new Date());
-	gtag('set', 'client_id', clientId);
+	
+	//set cid?
+	if(clientId) {
+		gtag('set', 'client_id', clientId);
+	}
+	
+	//loop through property IDs
 	for(var i=0; i < propertyIds.length; i++) {
 		gtag('config', propertyIds[0]);
 	}
