@@ -10,7 +10,7 @@
 	}
 
 	//do not track?
-	if(window.navigator && navigator.doNotTrack) {
+	if(window.navigator && (navigator.doNotTrack || navigator.globalPrivacyControl)) {
 		return;
 	}
 
