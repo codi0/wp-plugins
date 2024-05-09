@@ -10,7 +10,7 @@
 			</tr>
 			<tr>
 				<td>Secret Key</td>
-				<td><input type="text" name="<?=$page?>[secret_key]" value="<?=$data['secret_key']?>" size="50"></td>
+				<td><input type="password" name="<?=$page?>[secret_key]" value="<?=$data['secret_key']?>" size="50"></td>
 			</tr>
 			<tr>
 				<td>Logging</td>

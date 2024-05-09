@@ -73,7 +73,7 @@ add_action('init', function() {
 
 add_action('admin_menu', function() {
 	//add setting submenu
-	add_options_page('Cookieless GA', 'Cookieless GA', 'manage_options', 'ga', function() {
+	add_options_page('GA Privacy', 'GA Privacy', 'manage_options', 'ga', function() {
 		//set vars
 		$page = 'codi_ga';
 		//save data?
