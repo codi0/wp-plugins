@@ -1,0 +1,10 @@
+# URL rewriting
+<IfModule mod_rewrite.c>
+
+	# Rewrite URLs
+	RewriteEngine On
+
+	# Deny direct file access
+	RewriteRule .* - [L,R=404]
+
+</IfModule>
