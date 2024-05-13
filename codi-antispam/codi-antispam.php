@@ -152,7 +152,7 @@ function codi_aspam_init() {
 				//timeout
 				$error = false;
 				//log timeout?
-				if(codi_asapm_data('log_timeouts')) {
+				if(codi_aspam_data('log_timeouts')) {
 					codi_aspam_log('timeouts');
 				}
 			}
@@ -160,7 +160,7 @@ function codi_aspam_init() {
 		//failed?
 		if($error) {
 			//log failure?
-			if(codi_asapm_data('log_failures')) {
+			if(codi_aspam_data('log_failures')) {
 				codi_aspam_log('failures', [
 					'uri' => $isAjax ? wp_get_referer() : $_SERVER['REQUEST_URI'],
 					'ip' => $_SERVER['REMOTE_ADDR'],
@@ -214,7 +214,7 @@ function codi_aspam_admin() {
 
 function codi_aspam_ajax() {
 	//log interactive?
-	if(codi_asapm_data('log_interactive')) {
+	if(codi_aspam_data('log_interactive')) {
 		codi_aspam_log('interactive', [
 			'uri' => wp_get_referer(),
 			'ip' => $_SERVER['REMOTE_ADDR'],
