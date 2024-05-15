@@ -19,7 +19,7 @@ define('CODI_ASPAM_KEY', 'codi_aspam');
 
 function codi_aspam_log($name, array $data=[]) {
 	//encode data
-	$data = $data ? json_encode($data, JSON_PRETTY_PRINT) : '';
+	$data = $data ? json_encode($data) : '';
 	//log to file
 	@file_put_contents(__DIR__ . '/logs/' . $name . '.log', trim(date('Y-m-d H:i:s') . ' ' . $data) . "\n", FILE_APPEND|LOCK_EX);
 }
@@ -189,14 +189,14 @@ function codi_aspam_init() {
 			if(codi_aspam_data('log_failures')) {
 				codi_aspam_log('failures', [
 					'uri' => $isAjax ? wp_get_referer() : $_SERVER['REQUEST_URI'],
+					'ip' => isset($_SERVER['HTTP_CF_CONNECTING_IP']) ? $_SERVER['HTTP_CF_CONNECTING_IP'] : $_SERVER['REMOTE_ADDR'],
 					'action' => $action,
-					'ip' => $_SERVER['REMOTE_ADDR'],
-					'token' => $tokenValue,
+					'token' => !!$tokenValue,
 					'response' => $json,
 				]);
 			}
 			//display message
-			echo "<p>It looks like you've been flagged by our anti-spam system. If this is a mistake, please <a href=\"javascript:history.back();\">try again</a>.</p>";
+			echo "<p>It looks like you've been flagged by our anti-spam system. If this is a mistake, <a href=''>please try again</a>.</p>";
 			exit();
 		}
 	}
@@ -245,7 +245,7 @@ function codi_aspam_ajax() {
 	if(codi_aspam_data('log_interactive')) {
 		codi_aspam_log('interactive', [
 			'uri' => wp_get_referer(),
-			'ip' => $_SERVER['REMOTE_ADDR'],
+			'ip' => isset($_SERVER['HTTP_CF_CONNECTING_IP']) ? $_SERVER['HTTP_CF_CONNECTING_IP'] : $_SERVER['REMOTE_ADDR'],
 		]);
 		echo '1';
 	} else {
