@@ -19,7 +19,7 @@ define('CODI_ASPAM_KEY', 'codi_aspam');
 
 function codi_aspam_log($name, array $data=[]) {
 	//encode data
-	$data = $data ? json_encode($data) : '';
+	$data = $data ? json_encode($data, JSON_PRETTY_PRINT) : '';
 	//log to file
 	@file_put_contents(__DIR__ . '/logs/' . $name . '.log', trim(date('Y-m-d H:i:s') . ' ' . $data) . "\n", FILE_APPEND|LOCK_EX);
 }
@@ -74,6 +74,35 @@ function codi_aspam_data() {
 	return $res;
 }
 
+function codi_aspam_token($field, array $data=null) {
+	//use $_POST array?
+	if($data === null) {
+		$data = $_POST;
+	}
+	//loop through data
+	foreach($data as $k => $v) {
+		//match found?
+		if($k === $field) {
+			return $v;
+		}
+		//parse serialized string?
+		if($v && is_string($v) && strpos($v, '=') > 0) {
+			parse_str($v, $arr);
+			if($arr && is_array($arr)) {
+				$v = $arr;
+			}
+		}
+		//recursive check?
+		if($v && is_array($v)) {
+			if($t = codi_aspam_token($field, $v)) {
+				return $t;
+			}
+		}
+	}
+	//none
+	return '';
+}
+
 function codi_aspam_init() {
 	//set vars
 	$field = '_astoken';
@@ -84,6 +113,7 @@ function codi_aspam_init() {
 	$isLoggedIn = !$isDebug && is_user_logged_in();
 	$checkToken = ($_SERVER['REQUEST_METHOD'] === 'POST') && !$isLoggedIn && ($isAjax || !$isAdmin);
 	$loadChallenge = apply_filters('codi_aspam_load_challenge', !$isAdmin && !$isAjax && !$isLoggedIn);
+	$action = ($isAjax && isset($_REQUEST['action'])) ? $_REQUEST['action'] : '';
 	//pre-checks?
 	if($checkToken) {
 		//get post data
@@ -107,8 +137,6 @@ function codi_aspam_init() {
 		]);
 		//loop through tests
 		foreach($tests as $test) {
-			//get action
-			$action = ($isAjax && isset($_REQUEST['action'])) ? $_REQUEST['action'] : '';
 			//should check token?
 			if(!$checkToken || $test($action)) {
 				$checkToken = false;
@@ -119,9 +147,9 @@ function codi_aspam_init() {
 	//check for token?
 	if($checkToken && $data['site_key'] && $data['secret_key']) {
 		//set vars
+		$json = [];
 		$error = true;
-		$errData = [];
-		$tokenValue = isset($_POST[$field]) ? rawurldecode($_POST[$field]) : '';
+		$tokenValue = codi_aspam_token($field);
 		//has token?
 		if($tokenValue) {
 			//set url
@@ -145,8 +173,6 @@ function codi_aspam_init() {
 				//success?
 				if($json && isset($json['success']) && $json['success']) {
 					$error = false;
-				} else if($json && isset($json['error-codes']) && $json['error-codes']) {
-					$errData = $json['error-codes'];
 				}
 			} else {
 				//timeout
@@ -163,8 +189,10 @@ function codi_aspam_init() {
 			if(codi_aspam_data('log_failures')) {
 				codi_aspam_log('failures', [
 					'uri' => $isAjax ? wp_get_referer() : $_SERVER['REQUEST_URI'],
+					'action' => $action,
 					'ip' => $_SERVER['REMOTE_ADDR'],
-					'errors' => $errData,
+					'token' => $tokenValue,
+					'response' => $json,
 				]);
 			}
 			//display message
