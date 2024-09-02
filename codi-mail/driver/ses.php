@@ -12,6 +12,8 @@ function codi_mail_driver_ses($to, $subject, $message, $headers = '', $attachmen
 	$opts = codi_mail_opts();
 	$headers = $headers ?: [];
 	$attachments = $attachments ?: [];
+	$from_name = get_bloginfo('name');
+	$from_email = $opts['from'] ?: get_bloginfo('admin_email');
 	//filter inputs
 	$atts = apply_filters('wp_mail', compact( 'to', 'subject', 'message', 'headers', 'attachments' ));
     //do not send mail?
@@ -22,17 +24,42 @@ function codi_mail_driver_ses($to, $subject, $message, $headers = '', $attachmen
 	if($atts && is_array($atts)) {
 		extract($atts);
 	}
-	//create message
-	$msg = new SimpleEmailServiceMessage();
-	//format from
-	$from_email = apply_filters('wp_mail_from', $opts['from'] ?: get_bloginfo('admin_email'));
-	$from_name = apply_filters('wp_mail_from_name', get_bloginfo('name'));
-	//set from
-	$msg->setFrom($from_name . ' <' . $from_email . '>');
 	//format to?
 	if(!is_array($to)) {
 		$to = array_map('trim', explode(',', $to));
 	}
+	//format headers?
+	if(!is_array($headers)) {
+		$headers = str_replace("\r\n", "\n", $headers);
+		$headers = array_map('trim', explode("\n", $headers));
+	}
+	//format attachments?
+    if(!is_array($attachments)) {
+		$attachments = str_replace("\r\n", "\n", $attachments);
+		$attachments = array_map('trim', explode("\n", $attachments));
+	}
+	//create message
+	$msg = new SimpleEmailServiceMessage();
+	//set headers
+	foreach($headers as $h) {
+		$msg->addCustomHeader($h);
+		//get from name and email?
+		if(stripos($h, 'From:') === 0) {
+			$parts = str_replace([ 'From:', '>' ], '', $h);
+			$parts = explode('<', trim($parts));
+			if(isset($parts[1]) && strpos($parts[1], '@') > 0) {
+				$from_email = trim($parts[1]);
+				$from_name = trim(str_replace('"', '', $parts[0]));
+			} else if(strpos($parts[0], '@') > 0) {
+				$from_email = trim($parts[0]);
+			}
+		}
+	}
+	//filter from
+	$from_email = apply_filters('wp_mail_from', $from_email);
+	$from_name = apply_filters('wp_mail_from_name', $from_name);
+	//set from
+	$msg->setFrom($from_name . ' <' . $from_email . '>');
 	//set to
 	foreach($to as $t) {
 		//remove whitespace?
@@ -46,20 +73,6 @@ function codi_mail_driver_ses($to, $subject, $message, $headers = '', $attachmen
 	$msg->setSubject($subject);
 	//set message
 	$msg->setMessageFromString($message);
-	//format headers?
-	if(!is_array($headers)) {
-		$headers = str_replace("\r\n", "\n", $headers);
-		$headers = array_map('trim', explode("\n", $headers));
-	}
-	//set headers
-	foreach($headers as $h) {
-		$msg->addCustomHeader($h);
-	}
-	//format attachments?
-    if(!is_array($attachments)) {
-		$attachments = str_replace("\r\n", "\n", $attachments);
-		$attachments = array_map('trim', explode("\n", $attachments));
-	}
 	//set attachments
 	foreach($attachments as $a) {
 		$name = basename($a);
