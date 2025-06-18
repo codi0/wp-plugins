@@ -66,7 +66,7 @@
 				<td>
 					<select name="<?=$page?>[redirects][<?=++$key?>][code]">
 						<option value="301">301</option>
-						<option value="302">302</option>
+						<option value="302" selected>302</option>
 					</select>
 				</td>
 				<td>
