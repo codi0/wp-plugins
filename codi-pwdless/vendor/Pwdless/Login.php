@@ -89,13 +89,14 @@ class Login {
 				}
 			}
         }
+        
+        //set new user flag
+        $user->isNew = $newUser;
 
         // Login the user
         wp_set_current_user($user->ID);
         wp_set_auth_cookie($user->ID, $opts['remember']);
         do_action('wp_login', $user->user_login, $user);
-        
-        $user->isNew = $newUser;
 
         return $user;
     }
