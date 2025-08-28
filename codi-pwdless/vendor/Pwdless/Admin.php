@@ -4,6 +4,8 @@ namespace Pwdless;
 
 class Admin {
 
+	protected $checkboxes = [ 'block_wp_login', 'enable_throttle' ];
+
     public function __construct() {
         add_action('admin_menu', [$this, 'add_menu']);
         add_action('admin_init', [$this, 'register_settings']);
@@ -23,6 +25,11 @@ class Admin {
         register_setting('oidc_sso', 'oidc_sso', [
 			'sanitize_callback' => function($input) {
 				$existing = get_option('oidc_sso', []);
+				foreach($this->checkboxes as $key) {
+					if(!isset($input[$key])) {
+						$input[$key] = 0;
+					}
+				}
 				return array_merge( (array) $existing, (array) $input );
 			}
         ]);

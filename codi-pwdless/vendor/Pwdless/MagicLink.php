@@ -66,7 +66,7 @@ class MagicLink {
 
         // Hand off to orchestrator for unified flow
         $user = $this->orchestrator->login_or_register($identity, [
-			'roles' => $settings['shared_default_roles'] ?? 'subscriber',
+			'roles' => $settings['default_roles'] ?? 'subscriber',
         ]);
 
         if (is_wp_error($user)) {

@@ -40,9 +40,13 @@ class Login {
 		$newUser = false;
         $opts = array_merge([
 			'source' => '',
-            'roles' => 'subscriber',
+            'roles' => '',
             'remember' => true,
         ], $opts);
+        
+        if(!$opts['roles']) {
+			$opts['roles'] = 'subscriber';
+        }
         
         if(is_string($opts['roles'])) {
 			$opts['roles'] = explode(',', $opts['roles']);
