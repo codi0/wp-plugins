@@ -45,12 +45,19 @@ class Login {
         ], $opts);
         
         if(!$opts['roles']) {
-			$opts['roles'] = 'subscriber';
+			$opts['roles'] = [ 'subscriber' ];
+        } else if(is_string($opts['roles'])) {
+			$opts['roles'] = $opts['roles'] ? explode(',', $opts['roles']) : [];
         }
         
-        if(is_string($opts['roles'])) {
-			$opts['roles'] = explode(',', $opts['roles']);
+        foreach($opts['roles'] as $k => $v) {
+			$opts['roles'][$k] = trim($v);
+			if(!$opts['roles'][$k]) {
+				unset($opts['roles'][$k]);
+			}
         }
+        
+        $opts['roles'] = array_values($opts['roles']);
 
         // Validate email
         $email = strtolower(trim($identity['email'] ?? ''));
@@ -86,11 +93,11 @@ class Login {
         
         // Add user roles
         if($newUser || !$user->roles) {
+			$primaryRole = true;
 			foreach($opts['roles'] as $role) {
-				$role = trim($role);
-				if($role) {
-					$user->add_role($role);
-				}
+				$m = $primaryRole ? 'set_role' : 'add_role';
+				$user->$m($role);
+				$primaryRole = false;
 			}
         }
         

@@ -13,7 +13,7 @@ class MagicLink {
     public function __construct(Login $orchestrator) {
         $this->orchestrator = $orchestrator;
         $this->throttle = new Throttle;
-        add_action('init', [ $this, 'maybe_handle_login' ]);
+        add_action('wp', [ $this, 'maybe_handle_login' ]);
     }
 
 	public function check_wait($email, $saveHistory = true) {

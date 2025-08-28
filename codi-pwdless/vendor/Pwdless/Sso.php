@@ -15,7 +15,7 @@ class Sso {
             'microsoft365' => new Sso\Microsoft365($orchestrator),
             'google' => new Sso\Google($orchestrator),
         ];
-        add_action('init', [ $this, 'route' ]);
+        add_action('wp', [ $this, 'route' ]);
     }
 
     public function route() {
