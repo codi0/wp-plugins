@@ -199,11 +199,6 @@ add_filter('render_block', function($content, $block) {
 }, 9999, 2);
 
 add_filter('the_content', function($content) {
-	//skip if blocks?
-    if(function_exists('has_blocks') && has_blocks(get_the_ID())) {
-        return $content;
-    }
-    //process
 	return codi_vars_replace_tokens($content);
 }, 9999);
 
