@@ -661,7 +661,7 @@ class DomNode {
 	protected function checkEncoding($data, $charset=null) {
 		//convert encoding?
 		if(function_exists('mb_convert_encoding')) {
-			$data = mb_convert_encoding($data, "HTML-ENTITIES", $charset);
+		//	$data = mb_convert_encoding($data, "HTML-ENTITIES", $charset);
 		}
 		//remove invalid characters?
 		if(function_exists('iconv')) {
