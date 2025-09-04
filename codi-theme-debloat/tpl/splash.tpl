@@ -59,5 +59,8 @@
 	});
 	window.addEventListener('beforeunload', function(e) {
 		splash.loader(true, false);
+		setTimeout(function() {
+      splash.loader(false);
+		}, 1000);
 	});
 	</script>
