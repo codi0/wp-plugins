@@ -53,8 +53,10 @@ function codi_debug_bar() {
 	foreach($dbs as $db) {
 		//get db name
 		$dbname = isset($db->dbname) ? $db->dbname : $db->name;
+		//get queries
+		$queries = $db->queries ?: [];
 		//count queries
-		$data['queries'] += count($db->queries);
+		$data['queries'] += count($queries);
 		//get query log
 		$data['queries_log'][$dbname] = array_map(function($item) {
 			//set vars
@@ -69,7 +71,7 @@ function codi_debug_bar() {
 			}
 			//return
 			return $result;
-		}, $db->queries);
+		}, $queries);
 	}
 	//generate html
 	$html  = '<div id="debug-bar" style="font-size:13px; padding:10px; background:#dfdfdf;">';
