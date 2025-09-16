@@ -49,7 +49,7 @@ add_action('login_init', function() use($login) {
 
 /* SHORTCODE */
 
-add_shortcode('codi_pwdless', function(array $atts = []) use ($login) {
+add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
     // Settings
     $settings    = get_option('oidc_sso', []);
     $cfSiteKey   = $settings['cf_turnstile_key'] ?? '';
@@ -277,4 +277,12 @@ add_shortcode('codi_pwdless', function(array $atts = []) use ($login) {
     }
 
     return ob_get_clean();
+});
+
+add_shortcode('codi_pwdless_logout', function() {
+    if(is_user_logged_in()) {
+        wp_logout();
+    }
+    wp_redirect(home_url());
+    exit();
 });
