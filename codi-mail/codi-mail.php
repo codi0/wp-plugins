@@ -24,37 +24,10 @@ https://console.aws.amazon.com/ses/
 define('CODI_MAIL_PLUGIN_FILE', __FILE__);
 define('CODI_MAIL_PLUGIN_NAME', basename(__DIR__));
 
-//override wp mail
-if(!function_exists('wp_mail')) {
-	function wp_mail($to, $subject, $message, $headers = '', $attachments = array()) {
-		//set vars
-		$opts = codi_mail_opts();
-		//load driver
-		$func = codi_mail_load_driver($opts['type']);
-		//return
-		return $func($to, $subject, $message, $headers, $attachments);
-	}
-}
 
-//load mail driver
-function codi_mail_load_driver($driver) {
-	//set vars
-	$func = 'codi_mail_driver_' . $driver;
-	$file = __DIR__ . '/driver/' . $driver . '.php';
-	//load driver?
-	if(!function_exists($func) && is_file($file)) {
-		include_once($file);
-	}
-	//load default?
-	if(!function_exists($func)) {
-		$func = 'codi_mail_driver_smtp';
-		include_once(__DIR__ . '/driver/smtp.php');
-	}
-	//return
-	return $func ;
-}
+/* MAILER */
 
-//mail options
+//get or set mail options
 function codi_mail_opts(array $opts = null) {
 	//set vars
 	$defaults = [
@@ -86,6 +59,60 @@ function codi_mail_opts(array $opts = null) {
 	return array_merge($defaults, $opts);
 }
 
+//load mail driver
+function codi_mail_load_driver($driver=null) {
+	//get opts
+	$opts = codi_mail_opts();
+	//set driver
+	$driver = $driver ?: $opts['type'];
+	//has driver?
+	if(empty($driver)) {
+		return;
+	}
+	//get file path
+	$file = __DIR__ . '/driver/' . $driver . '.php';
+	//load driver?
+	if(is_file($file)) {
+		include_once($file);
+	}
+}
+
+//phpmailer hook
+function codi_mail_init_phpmailer($phpMailer) {
+	//set vars
+	$opts = codi_mail_opts();
+	//is smtp?
+	if($opts['type'] !== 'smtp') {
+		return;
+	}
+	//continue?
+	if($opts['host']) {
+		//use SMTP
+		$phpMailer->isSMTP();
+		$phpMailer->SMTPAuth = true;
+		//set credentials
+		$phpMailer->Host = $opts['host'];
+		$phpMailer->Port = $opts['port'] ?: 587;
+		$phpMailer->Username = $opts['username'];
+		$phpMailer->Password = $opts['password'];
+		//set protocol?
+		if($opts['protocol']) {
+			$phpMailer->SMTPSecure = $opts['protocol'];
+		}
+		//set from?
+		if($opts['from']) {
+			$phpMailer->setFrom($opts['from']);
+		}
+	}
+}
+
+//mailer hooks
+add_action('plugins_loaded', 'codi_mail_load_driver', -9999);
+add_action('phpmailer_init', 'codi_mail_init_phpmailer', 9999);
+
+
+/* ADMIN */
+
 //register admin page
 function codi_mail_admin_menu() {
 	//set vars
@@ -111,7 +138,7 @@ function codi_mail_admin_options() {
 		$opts['type'] = $_GET['type'];
 	}
 	//load driver
-	$admin_func = codi_mail_load_driver($opts['type']) . '_admin';
+	codi_mail_load_driver($opts['type']);
 	//save data?
 	if(isset($_POST['mail_opts']) && check_admin_referer($page)) {
 		$opts = codi_mail_opts($_POST['mail_opts']);
@@ -121,6 +148,13 @@ function codi_mail_admin_options() {
 		$test = $_POST['mail_test'];
 		$test['result'] = wp_mail($test['to'], $test['subject'], $test['message']);
 	}
+	//default fields
+	$fields  = '<tr><td>About</td><td style="font-size:0.9em; font-style:italic;">Not sure which provider to choose? Give Amazon SES a try: <a href="https://blog.mailtrap.io/amazon-ses-explained/#Step-by-Step_setup" target="_blank">Amazon SES setup guide</a></td></tr>' . "\n";
+	$fields .= '<tr><td>Host</td><td><input type="text" name="mail_opts[host]" size="50" value="' . esc_attr($opts['host']) . '"></td></tr>' . "\n";
+	$fields .= '<tr><td>Port</td><td><input type="text" name="mail_opts[port]" size="5" value="' . esc_attr($opts['port']) . '"></td></tr>' . "\n";
+	$fields .= '<tr><td>Protocol</td><td><input type="text" name="mail_opts[protocol]" size="5" value="' . esc_attr($opts['protocol']) . '"></td></tr>' . "\n";
+	$fields .= '<tr><td>Username</td><td><input type="text" name="mail_opts[username]" size="50" value="' . esc_attr($opts['username']) . '"></td></tr>' . "\n";
+	$fields .= '<tr><td>Password</td><td><input type="password" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
 	//generate html
 	echo '<div class="wrap">' . "\n";
 	echo '<h2>' . __('SMTP Mail') . '</h2>' . "\n";
@@ -129,17 +163,7 @@ function codi_mail_admin_options() {
 	wp_nonce_field($page);
 	echo '<table class="form-table">' . "\n";
 	echo '<tr><td width="120">Type</td><td>' . codi_mail_admin_dropdown('mail_opts[type]', $opts['type'], $types) . '</td></tr>' . "\n";
-	//load custom settings?
-	if(function_exists($admin_func)) {
-		echo $admin_func($opts);
-	} else {
-		echo '<tr><td>About</td><td style="font-size:0.9em; font-style:italic;">Not sure which provider to choose? Give Amazon SES a try: <a href="https://blog.mailtrap.io/amazon-ses-explained/#Step-by-Step_setup" target="_blank">Amazon SES setup guide</a></td></tr>' . "\n";
-		echo '<tr><td>Host</td><td><input type="text" name="mail_opts[host]" size="50" value="' . esc_attr($opts['host']) . '"></td></tr>' . "\n";
-		echo '<tr><td>Port</td><td><input type="text" name="mail_opts[port]" size="5" value="' . esc_attr($opts['port']) . '"></td></tr>' . "\n";
-		echo '<tr><td>Protocol</td><td><input type="text" name="mail_opts[protocol]" size="5" value="' . esc_attr($opts['protocol']) . '"></td></tr>' . "\n";
-		echo '<tr><td>Username</td><td><input type="text" name="mail_opts[username]" size="50" value="' . esc_attr($opts['username']) . '"></td></tr>' . "\n";
-		echo '<tr><td>Password</td><td><input type="password" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
-	}
+	echo apply_filters('codi_mail_admin_fields', $fields, $opts);
 	echo '<tr><td>From email</td><td><input type="text" name="mail_opts[from]" size="50" value="' . esc_attr($opts['from']) . '"></td></tr>' . "\n";
 	echo '</table>' . "\n";
 	echo '<br>' . "\n";
@@ -205,5 +229,5 @@ function codi_mail_admin_dropdown($name, $value, array $opts) {
 	return $menu;
 }
 
-//init
+//admin hooks
 add_action('admin_menu', 'codi_mail_admin_menu');
