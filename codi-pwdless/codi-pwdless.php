@@ -280,9 +280,15 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
 });
 
 add_shortcode('codi_pwdless_logout', function() {
+	//skip request?
+	if(is_admin() || wp_doing_ajax() || (defined('REST_REQUEST') && REST_REQUEST)) {
+		return;
+	}
+	//is logged in?
     if(is_user_logged_in()) {
         wp_logout();
     }
-    wp_redirect(home_url());
+    //redirect user
+    wp_redirect(wp_login_url());
     exit();
 });
