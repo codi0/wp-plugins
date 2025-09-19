@@ -3,6 +3,7 @@
 namespace Pwdless\Sso;
 
 use Pwdless\Login;
+use Pwdless\Email;
 
 abstract class Base {
 
