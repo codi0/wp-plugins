@@ -54,7 +54,7 @@ abstract class Base {
             'provider' => $this->id,
             'nonce' => $nonce,
             'code_verifier' => $code_verifier,
-            'redirect_to' => $this->redirect_to()
+            'redirect_to' => $this->orchestrator->get_redirect_url(),
         ], 600);
 
         $auth_url = add_query_arg([
@@ -215,12 +215,6 @@ abstract class Base {
 			(new SendEmail)->send($type, $user->user_email, $tokens);		
 		}
 	}
-
-    protected function redirect_to() {
-        $r = $_REQUEST['redirect_to'] ?? '';
-        if ($r && wp_validate_redirect($r)) return $r;
-        return $this->orchestrator->get_redirect_url();
-    }
 
     protected function b64url_encode($bin) {
         return rtrim(strtr(base64_encode($bin), '+/', '-_'), '=');

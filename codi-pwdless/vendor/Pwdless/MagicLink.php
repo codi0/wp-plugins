@@ -39,10 +39,21 @@ class MagicLink {
     }
 
 	public function get_magic_link($email) {
-		return add_query_arg([
+		//set args
+		$args = [
 			self::ACTION_PARAM => 1,
 			'token' => $this->generate_token($email),
-		], $this->orchestrator->get_base_url());
+		];
+		//get redirect to
+		$r = $_REQUEST['redirect_to'] ?? '';
+		//add to args?
+		if($r && wp_validate_redirect($r)) {
+			$args['redirect_to'] = $r;
+		}
+		//urlencode
+		$args = array_map('rawurlencode', $args);
+		//return
+		return add_query_arg($args, $this->orchestrator->get_base_url());
 	}
 
     public function maybe_handle_login() {
@@ -76,7 +87,7 @@ class MagicLink {
         $this->throttle->clear_history($email);
 
         // Redirect if orchestrator didn't already
-        wp_safe_redirect($this->default_opts['redirect_to'] ?? $this->orchestrator->get_redirect_url());
+        wp_safe_redirect($this->orchestrator->get_redirect_url());
         exit;
     }
 

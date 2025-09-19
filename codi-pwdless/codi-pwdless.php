@@ -41,7 +41,12 @@ add_action('login_init', function() use($login) {
 		return;
 	}
 	if($settings['block_wp_login'] ?? false) {
-		wp_safe_redirect($login->get_base_url());
+		$url = $login->get_base_url();
+		$r = $_GET['redirect_to'] ?? '';
+		if($r && wp_validate_redirect($r)) {
+			$url = add_query_arg('redirect_to', rawurlencode($r), $url);
+		}
+		wp_safe_redirect($url);
 		exit();
 	}
 });

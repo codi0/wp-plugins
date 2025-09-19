@@ -23,7 +23,14 @@ class Login {
 	}
 
 	public function get_redirect_url() {
-		return $this->redirect_url;
+		//check request
+		$r = $_REQUEST['redirect_to'] ?? '';
+		//valid redirect?
+        if(!$r || !wp_validate_redirect($r)) {
+			$r = $this->redirect_url;
+        }
+        //return
+        return $r;
 	}
 
 	public function is_new_user($email, $blog_id=null) {
