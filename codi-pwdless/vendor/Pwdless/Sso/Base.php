@@ -210,9 +210,8 @@ abstract class Base {
 		}
 		
 		if($user->isNew) {
-			$tokens = [];
-			$type = 'sso_' . ($user->isNew ? 'registration' : 'login');
-			(new SendEmail)->send($type, $user->user_email, $tokens);		
+			$type = 'pwdless_email_sso_reg';
+			(new Email)->send($type, $user->user_email);	
 		}
 	}
 

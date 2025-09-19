@@ -24,13 +24,29 @@ class Admin {
     public function register_settings() {
         register_setting('oidc_sso', 'oidc_sso', [
 			'sanitize_callback' => function($input) {
+				//get current data
 				$existing = get_option('oidc_sso', []);
-				foreach($this->checkboxes as $key) {
-					if(!isset($input[$key])) {
-						$input[$key] = 0;
+				//merge new input data
+				$input = array_merge( (array) $existing, (array) $input );
+				//remove old keys
+				foreach($input as $k => $v) {
+					if(strpos($k, 'pwdless_') === 0) {
+						unset($input[$k]);
 					}
 				}
-				return array_merge( (array) $existing, (array) $input );
+				//check default emails
+				foreach(Email::$defaults as $defaults) {
+					foreach($defaults as $k => $v) {
+						if(isset($input[$k])) {
+							$input[$k] = str_replace("\r\n", "\n", trim($input[$k]));
+							if($input[$k] === $v) {
+								unset($input[$k]);
+							}
+						}
+					}
+				}
+				//return
+				return $input;
 			}
         ]);
 
@@ -56,22 +72,28 @@ class Admin {
 
 		// --- Emails tab 
         add_settings_section('pwdless_email_sso_reg', 'SSO Regisration', '__return_false', 'oidc_sso_emails');
-        $this->field('pwdless_email_sso_reg_subject', 'Subject', 'oidc_sso_emails', 'pwdless_email_sso_reg', 'text', [ '{site_name}' ]);
-        $this->field('pwdless_email_sso_reg_body', 'Body', 'oidc_sso_emails', 'pwdless_email_sso_reg', 'textarea', [ '{email}', '{site_name}', '{home_link}' ]);
+        $this->field('email_sso_reg_subject', 'Subject', 'oidc_sso_emails', 'pwdless_email_sso_reg', 'text', [ '{site_name}' ]);
+        $this->field('email_sso_reg_body', 'Body', 'oidc_sso_emails', 'pwdless_email_sso_reg', 'textarea', [ '{email}', '{site_name}', '{home_link}' ]);
 
         add_settings_section('pwdless_email_ml_reg', 'Magic Link Registration', '__return_false', 'oidc_sso_emails');
-		$this->field('pwdless_email_ml_reg_subject', 'Subject', 'oidc_sso_emails', 'pwdless_email_ml_reg', 'text', [ '{site_name}' ]);
-        $this->field('pwdless_email_ml_reg_body', 'Body', 'oidc_sso_emails', 'pwdless_email_ml_reg', 'textarea', [ '{email}', '{site_name}', '{home_link}', '{magic_link}', '{magic_expiry}' ]);
+		$this->field('email_ml_reg_subject', 'Subject', 'oidc_sso_emails', 'pwdless_email_ml_reg', 'text', [ '{site_name}' ]);
+        $this->field('email_ml_reg_body', 'Body', 'oidc_sso_emails', 'pwdless_email_ml_reg', 'textarea', [ '{email}', '{site_name}', '{home_link}', '{magic_link}', '{magic_expiry}' ]);
         
         add_settings_section('pwdless_email_ml_login', 'Magic Link Login', '__return_false', 'oidc_sso_emails');
-        $this->field('pwdless_email_ml_login_subject', 'Subject', 'oidc_sso_emails', 'pwdless_email_ml_login', 'text', [ '{site_name}' ]);
-        $this->field('pwdless_email_ml_login_body', 'Body', 'oidc_sso_emails', 'pwdless_email_ml_login', 'textarea', [ '{email}', '{site_name}', '{home_link}', '{magic_link}', '{magic_expiry}' ]);        
+        $this->field('email_ml_login_subject', 'Subject', 'oidc_sso_emails', 'pwdless_email_ml_login', 'text', [ '{site_name}' ]);
+        $this->field('email_ml_login_body', 'Body', 'oidc_sso_emails', 'pwdless_email_ml_login', 'textarea', [ '{email}', '{site_name}', '{home_link}', '{magic_link}', '{magic_expiry}' ]);        
     }
 
     private function field($key, $label, $page_slug, $section, $type = 'input', array $tokens = []) {
-        add_settings_field($key, $label, function() use($key, $type, $tokens) {
+        add_settings_field($key, $label, function() use($key, $type, $section, $tokens) {
 			$opts = get_option('oidc_sso', []);
 			$val  = $opts[$key] ?? '';
+			
+			if(!$val && strpos($section, 'pwdless_email_') === 0) {
+				if(isset(Email::$defaults[$section][$key])) {
+					$val = Email::$defaults[$section][$key];
+				}
+			}
 
 			if ($type == 'checkbox') {
 				printf(
@@ -81,7 +103,7 @@ class Admin {
 				);
 			} else if ($type == 'textarea') {
 				printf(
-					'<textarea name="oidc_sso[%s]" rows="5" cols="50" class="large-text code">%s</textarea>',
+					'<textarea name="oidc_sso[%s]" rows="10" cols="50" class="large-text code">%s</textarea>',
 					esc_attr($key),
 					esc_textarea($val)
 				);

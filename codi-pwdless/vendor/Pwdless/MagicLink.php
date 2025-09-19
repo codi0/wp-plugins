@@ -29,7 +29,7 @@ class MagicLink {
 
         // Is this a new user?
         $is_new = $this->orchestrator->is_new_user($email);
-        $type = 'magiclink_' . ($is_new ? 'registration' : 'login');
+        $type = 'pwdless_email_ml_' . ($is_new ? 'reg' : 'login');
 
 		//send email
 		return (new Email)->send($type, $email, [

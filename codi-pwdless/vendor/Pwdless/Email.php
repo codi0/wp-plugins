@@ -4,12 +4,24 @@ namespace Pwdless;
 
 class Email {
 
-    public function send($type, $email, array $tokens = []) {
+	public static $defaults = [
+		'pwdless_email_ml_login' => [
+			'email_ml_login_subject' => 'Login to {site_name}',
+			'email_ml_login_body' => "Click the link below to sign in now:\n\n{magic_link}\n\nThis link is single use and will expire in {magic_expiry} minutes. If you did not request this login link, please reply to this email.\n\nThanks,\nThe {site_name} Team",
+		],
+		'pwdless_email_ml_reg' => [
+			'email_ml_reg_subject' => 'Activate your account at {site_name}',
+			'email_ml_reg_body' => "Click the link below to activate your account:\n\n{magic_link}\n\nThis link is single use and will expire in {magic_expiry} minutes. If you did not request this activation link, please reply to this email.\n\nThanks,\nThe {site_name} Team",
+		],
+		'pwdless_email_sso_reg' => [
+			'email_sso_reg_subject' => 'Welcome to {site_name}',
+			'email_sso_reg_body' => "Your account is now ready to use:\n\n{home_link}\n\nThanks,\nThe {site_name} Team",
+		]
+	];
 
-		try {
-			[$subject_key, $body_key, $default_subject, $default_body] = $this->get_template_info($type);
-		} catch(\Exception $e) {
-			//exit early
+    public function send($type, $email, array $tokens = []) {
+		//valid email?
+		if(!isset(self::$defaults[$type])) {
 			return;
 		}
 
@@ -18,9 +30,13 @@ class Email {
         $tokens['home_link'] = home_url();
         $tokens['site_name'] = get_option('blogname');
         
+        //get keys
+        $defaults = self::$defaults[$type];
+        $keys = array_keys($defaults);
+        
         $opts = get_option('oidc_sso', []);
-        $subject_tpl = ($opts[$subject_key] ?? '') ?: $default_subject;
-        $body_tpl    = ($opts[$body_key] ?? '') ?: $default_body;
+        $subject_tpl = ($opts[$keys[0]] ?? '') ?: $defaults[$keys[0]];
+        $body_tpl    = ($opts[$keys[1]] ?? '') ?: $defaults[$keys[1]];
 
         // Replace tokens
         $subject = $this->format_text($subject_tpl, $tokens);
@@ -34,33 +50,5 @@ class Email {
 			return $tokens[$m[1]] ?? '';
 		}, $text);
 	}
-
-    protected function get_template_info($type) {
-        switch ($type) {
-            case 'magiclink_login':
-                return [
-                    'email_ml_login_subject',
-                    'email_ml_login_body',
-                    'Login to {site_name}',
-                    "Click the link below to sign in now:\n\n{magic_link}\n\nThis link is single use and will expire in {magic_expiry} minutes. If you did not request this login link, please reply to this email.\n\nThanks,\nThe {site_name} Team",
-                ];
-            case 'magiclink_registration':
-                return [
-                    'email_ml_reg_subject',
-                    'email_ml_reg_body',
-                    'Activate your account at {site_name}',
-                    "Click the link below to activate your account:\n\n{magic_link}\n\nThis link is single use and will expire in {magic_expiry} minutes. If you did not request this activation link, please reply to this email.\n\nThanks,\nThe {site_name} Team",
-                ];
-            case 'sso_registration':
-                return [
-                    'email_sso_reg_subject',
-                    'email_sso_reg_body',
-                    'Welcome to {site_name}',
-                    "Your account is now ready to use:\n\n{home_link}\n\nThanks,\nThe {site_name} Team",
-                ];
-            default:
-                throw new \InvalidArgumentException("Unknown email type $type");
-        }
-    }
 
 }
