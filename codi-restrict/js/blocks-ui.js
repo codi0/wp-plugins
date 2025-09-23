@@ -4,12 +4,37 @@
     const { PanelBody, SelectControl, TextControl } = wp.components;
     const { Fragment, createElement: el } = wp.element;
     const { useSelect, useDispatch } = wp.data;
+    const { useEffect, useState } = wp.element;
+
+    // Global registry to track all restriction IDs across the session
+    const restrictionIdRegistry = new Set();
 
     /**
-     * Generate a stable restrictionId
+     * Generate a truly unique restrictionId
      */
     function generateRestrictionId() {
-        return 'r-' + Date.now().toString(36) + Math.random().toString(36).substr(2, 5);
+        let attempts = 0;
+        let id;
+        
+        do {
+            generateRestrictionId.counter = (generateRestrictionId.counter || 0) + 1;
+            const timestamp = Date.now().toString(36);
+            const counter = generateRestrictionId.counter.toString(36);
+            const random = Math.random().toString(36).substr(2, 4);
+            const sessionId = (window.wp?.data?.select('core/editor')?.getCurrentPostId() || 'unknown').toString(36);
+            
+            id = `r-${timestamp}-${counter}-${random}-${sessionId}`;
+            attempts++;
+            
+            // Failsafe to prevent infinite loops
+            if (attempts > 100) {
+                console.warn('CodiRestrict: Unable to generate unique restriction ID after 100 attempts');
+                break;
+            }
+        } while (restrictionIdRegistry.has(id));
+        
+        restrictionIdRegistry.add(id);
+        return id;
     }
 
     /**
@@ -22,10 +47,51 @@
     }
 
     /**
+     * Check if restrictionId is already used by another block
+     */
+    function isRestrictionIdInUse(restrictionId, currentClientId, blocks) {
+        return blocks.some(function(block) {
+            return block.clientId !== currentClientId && 
+                   block.attributes.restrictionId === restrictionId;
+        });
+    }
+
+    /**
+     * Get all blocks flattened including nested blocks
+     */
+    function getAllBlocksFlattened(blocks) {
+        let flatBlocks = [];
+        blocks.forEach(function(block) {
+            flatBlocks.push(block);
+            if (block.innerBlocks && block.innerBlocks.length > 0) {
+                flatBlocks = flatBlocks.concat(getAllBlocksFlattened(block.innerBlocks));
+            }
+        });
+        return flatBlocks;
+    }
+
+    /**
+     * Check if a restriction rule exists for this post
+     */
+    function hasRuleForRestrictionId(rulesArray, restrictionId) {
+        return rulesArray.some(function(rule) {
+            return rule.restrictionId === restrictionId;
+        });
+    }
+
+    /**
+     * Count how many blocks are using a specific restrictionId
+     */
+    function countBlocksUsingRestrictionId(restrictionId, blocks) {
+        return blocks.filter(function(block) {
+            return block.attributes.restrictionId === restrictionId;
+        }).length;
+    }
+
+    /**
      * Add restrictionId attribute to all blocks
      */
     const addRestrictionIdAttribute = function(settings) {
-        // Add restrictionId to all block types
         if (!settings.attributes) {
             settings.attributes = {};
         }
@@ -43,32 +109,106 @@
      */
     const withBlockRestrictionControls = function(BlockEdit) {
         return function(props) {
-            // Use the correct selector for post meta
-            const postMeta = useSelect(function(select) {
+            const [isProcessingId, setIsProcessingId] = useState(false);
+
+            // Get post meta and all blocks
+            const { postMeta, allBlocks } = useSelect(function(select) {
                 const editor = select('core/editor');
-                return editor ? editor.getEditedPostAttribute('meta') || {} : {};
+                const blockEditor = select('core/block-editor') || select('core/editor');
+                
+                return {
+                    postMeta: editor ? editor.getEditedPostAttribute('meta') || {} : {},
+                    allBlocks: blockEditor ? blockEditor.getBlocks() : []
+                };
             }, []);
             
             const { editPost } = useDispatch('core/editor');
 
-            // Generate restrictionId only if it doesn't exist
-            if (!props.attributes.restrictionId) {
-                const newId = generateRestrictionId();
-                props.setAttributes({ restrictionId: newId });
-                return el(BlockEdit, props); // Return early to avoid processing with empty ID
-            }
+            const flatBlocks = getAllBlocksFlattened(allBlocks);
 
-            const restrictionId = props.attributes.restrictionId;
-
-            // Ensure we have an array and handle the case where meta might be undefined
+            // Ensure we have a rules array
             let rulesArray = [];
             if (postMeta && Array.isArray(postMeta._codi_restrict_blocks)) {
                 rulesArray = [...postMeta._codi_restrict_blocks];
             }
 
+            // Handle restrictionId assignment and validation
+            useEffect(function() {
+                if (isProcessingId) return;
+
+                const currentId = props.attributes.restrictionId;
+                let needsNewId = false;
+                let reason = '';
+
+                // Check if we need a new ID
+                if (!currentId) {
+                    needsNewId = true;
+                    reason = 'missing';
+                } else if (isRestrictionIdInUse(currentId, props.clientId, flatBlocks)) {
+                    // For duplicates, only the "newer" block (by clientId) should get a new ID
+                    // This ensures the original block keeps its ID and rule
+                    const blocksWithSameId = flatBlocks.filter(function(block) {
+                        return block.attributes.restrictionId === currentId;
+                    });
+                    
+                    // Sort by clientId to get deterministic behavior
+                    const sortedBlocks = blocksWithSameId.sort(function(a, b) {
+                        return a.clientId.localeCompare(b.clientId);
+                    });
+                    
+                    // Only blocks that are NOT the first one (original) need new IDs
+                    const isOriginalBlock = sortedBlocks[0].clientId === props.clientId;
+                    
+                    if (!isOriginalBlock) {
+                        needsNewId = true;
+                        reason = 'duplicate';
+                    }
+                } else if (!hasRuleForRestrictionId(rulesArray, currentId) && currentId.includes('-unknown-')) {
+                    // This might be a copied block from another post
+                    needsNewId = true;
+                    reason = 'orphaned';
+                }
+
+                if (needsNewId) {
+                    setIsProcessingId(true);
+                    const newId = generateRestrictionId();
+                    
+                    // Copy existing rule if this was a duplication
+                    if (reason === 'duplicate' && currentId) {
+                        const existingRuleIndex = findRuleIndex(rulesArray, currentId);
+                        if (existingRuleIndex !== -1) {
+                            const copiedRule = { 
+                                ...rulesArray[existingRuleIndex], 
+                                restrictionId: newId 
+                            };
+                            
+                            const newRulesArray = [...rulesArray, copiedRule];
+                            const newMeta = { 
+                                ...postMeta, 
+                                _codi_restrict_blocks: newRulesArray 
+                            };
+                            
+                            editPost({ meta: newMeta });
+                        }
+                    }
+
+                    props.setAttributes({ restrictionId: newId });
+                    
+                    // Reset processing flag after a brief delay
+                    setTimeout(() => setIsProcessingId(false), 100);
+                }
+            }, [props.attributes.restrictionId, props.clientId, flatBlocks.length, rulesArray.length]);
+
+            // Don't render controls while processing ID changes
+            if (isProcessingId || !props.attributes.restrictionId) {
+                return el(BlockEdit, props);
+            }
+
+            const restrictionId = props.attributes.restrictionId;
+
             // Find current block's rule
             const idx = findRuleIndex(rulesArray, restrictionId);
-                            const currentRule = idx !== -1
+            const currentRule = idx !== -1
                 ? rulesArray[idx]
                 : {
                     restrictionId: restrictionId,
@@ -90,7 +230,6 @@
                     newRulesArray.push(updatedRule);
                 }
 
-                // Update the meta with the new rules array
                 const newMeta = { 
                     ...postMeta, 
                     _codi_restrict_blocks: newRulesArray 
@@ -143,33 +282,45 @@
                         }),
                         currentRule.who === 'roles' && el(TextControl, {
                             label: 'User must have these roles',
-                            help: 'Comma-separated list',
-                            value: Array.isArray(currentRule.roles) ? currentRule.roles.join(', ') : '',
+                            help: 'Comma-separated list (e.g., editor, author)',
+                            value: Array.isArray(currentRule.roles) ? currentRule.roles.join(', ') : (currentRule.roles || ''),
                             onChange: function(val) {
-                                const roles = val ? val.split(',').map(function(r) { return r.trim(); }) : [];
-                                updateRule('roles', roles);
+                                // If the value looks like it's still being typed (ends with comma or space), store as string
+                                if (typeof val === 'string' && (val.endsWith(',') || val.endsWith(', ') || val.endsWith(' '))) {
+                                    updateRule('roles', val);
+                                } else {
+                                    // Parse into array
+                                    const roles = val ? val.split(',').map(function(r) { return r.trim(); }).filter(function(r) { return r; }) : [];
+                                    updateRule('roles', roles);
+                                }
                             }
                         }),
                         currentRule.who === 'roles' && el(TextControl, {
                             label: 'User must NOT have these roles',
-                            help: 'Comma separated list',
-                            value: Array.isArray(currentRule.roles_forbidden) ? currentRule.roles_forbidden.join(', ') : '',
+                            help: 'Comma-separated list (e.g., subscriber)',
+                            value: Array.isArray(currentRule.roles_forbidden) ? currentRule.roles_forbidden.join(', ') : (currentRule.roles_forbidden || ''),
                             onChange: function(val) {
-                                const rolesForbidden = val ? val.split(',').map(function(r) { return r.trim(); }) : [];
-                                updateRule('roles_forbidden', rolesForbidden);
+                                // If the value looks like it's still being typed (ends with comma or space), store as string
+                                if (typeof val === 'string' && (val.endsWith(',') || val.endsWith(', ') || val.endsWith(' '))) {
+                                    updateRule('roles_forbidden', val);
+                                } else {
+                                    // Parse into array
+                                    const rolesForbidden = val ? val.split(',').map(function(r) { return r.trim(); }).filter(function(r) { return r; }) : [];
+                                    updateRule('roles_forbidden', rolesForbidden);
+                                }
                             }
                         }),
                         currentRule.who && currentRule.who !== '' && el(SelectControl, {
                             label: 'What happens to restricted users?',
                             value: currentRule.type || 'hide',
                             options: [
-                                { label: 'Hide block', value: 'hide' },
+                                { label: 'Hide block completely', value: 'hide' },
                                 { label: 'Show restriction message', value: 'message' }
                             ],
                             onChange: function(val) { updateRule('type', val); }
                         }),
                         currentRule.type === 'message' && currentRule.who && currentRule.who !== '' && el(TextControl, {
-                            label: 'Custom Message (optional)',
+                            label: 'Custom message (optional)',
                             help: 'Leave blank for default message',
                             value: currentRule.action || '',
                             onChange: function(val) { updateRule('action', val); }

@@ -3,14 +3,14 @@
 /*
 Plugin Name: Codi Restrict
 Description: Restrict post content by user role
-Version: 1.0.0
+Version: 1.0.7
 Author: codi0
 Author URI: https://github.com/codi0/wp-plugins/
 */
 
 
 //define constants
-define('CODI_RESTRICT_VERSION', '1.0.0');
+define('CODI_RESTRICT_VERSION', '1.0.7');
 
 
 /* PUBLIC API */
@@ -99,6 +99,13 @@ function codi_restrict_redirect() {
 	if(!in_array($rules['type'], [ 'login', 'redirect' ])) {
 		return;
 	}
+	//get user
+	$user = wp_get_current_user();
+	$current_roles = $user ? $user->roles : [];
+	//skip administrator?
+    if(in_array('administrator', $current_roles)) {
+	//	return false;
+    }
 	//filter url
 	$url = apply_filters(__FUNCTION__, $rules['action'] ?: wp_login_url());
 	//target is login?
@@ -177,7 +184,8 @@ function codi_restrict_metabox_content($post) {
 	echo '<style>' . "\n";
 	echo '#codi_restrict_type_wrap, #codi_restrict_action_wrap, #codi_restrict_roles_forbidden_wrap { display: none; }' . "\n";
 	echo '#codi_restrict .main { display:block; font-weight:600; margin-bottom:2px; }' . "\n";
-	echo '#codi_restrict [type="text"], #codi_restrict select, #codi_restrict textarea { width:85%; }' . "\n";
+	echo '#codi_restrict [type="text"], #codi_restrict textarea { width:100%; }' . "\n";
+	echo '#codi_restrict select { width:85%; }' . "\n";
 	echo '#codi_restrict textarea { height: 60px; resize: vertical; }' . "\n";
 	echo '</style>' . "\n";
 	//add nonce field
@@ -204,8 +212,8 @@ function codi_restrict_metabox_content($post) {
 		$existing_roles = implode(', ', $rules['roles']);
 	}
 	
-	echo '<textarea name="codi_restrict_roles_text" id="codi_restrict_roles_text" placeholder="administrator, editor, author">' . esc_textarea($existing_roles) . '</textarea>' . "\n";
-	echo '<small>Enter role names separated by commas</small>' . "\n";
+	echo '<input type="text" name="codi_restrict_roles_text" id="codi_restrict_roles_text" value="' . esc_attr($existing_roles) . '">' . "\n";
+	//echo '<small>Enter role names separated by commas</small>' . "\n";
 	echo '</p>' . "\n";
 	echo '</div>' . "\n";
 	
@@ -219,8 +227,8 @@ function codi_restrict_metabox_content($post) {
 		$existing_forbidden = implode(', ', $rules['roles_forbidden']);
 	}
 	
-	echo '<textarea name="codi_restrict_roles_forbidden_text" id="codi_restrict_roles_forbidden_text" placeholder="subscriber, banned">' . esc_textarea($existing_forbidden) . '</textarea>' . "\n";
-	echo '<small>Enter role names to exclude separated by commas</small>' . "\n";
+	echo '<input type="text" name="codi_restrict_roles_forbidden_text" id="codi_restrict_roles_forbidden_text" value="' . esc_attr($existing_forbidden) . '">' . "\n";
+	//echo '<small>Enter role names to exclude separated by commas</small>' . "\n";
 	echo '</p>' . "\n";
 	echo '</div>' . "\n";
 	
@@ -464,6 +472,11 @@ function codi_restrict_block_denied($rule) {
 
     $user = wp_get_current_user();
     $current_roles = $user ? $user->roles : [];
+    
+    // Skip administrator?
+    if (in_array('administrator', $current_roles) ) {
+	//	return false;
+    }
 
     // Anonymous only - deny if logged in
     if ($rule['who'] === 'anonymous' && is_user_logged_in()) {
@@ -558,6 +571,114 @@ function codi_restrict_render_block($block_content, $block) {
     return $block_content;
 }
 
+//cleanup orphaned block rules
+function codi_restrict_cleanup_orphaned_rules($post_id) {
+    // Skip if not a valid post
+    if (!$post_id || wp_is_post_revision($post_id) || wp_is_post_autosave($post_id)) {
+        return;
+    }
+    
+    // Skip for bulk operations, quick edits, and autosaves
+    if (defined('DOING_AUTOSAVE') && DOING_AUTOSAVE) {
+        return;
+    }
+    
+    // Skip if this is a REST API request (Gutenberg auto-saves)
+    if (defined('REST_REQUEST') && REST_REQUEST) {
+        return;
+    }
+    
+    // Only run for specific post statuses to avoid unnecessary processing
+    $post_status = get_post_status($post_id);
+    if (!in_array($post_status, ['publish', 'draft', 'private', 'future'])) {
+        return;
+    }
+    
+    // Get current block rules
+    $block_rules = get_post_meta($post_id, '_codi_restrict_blocks', true);
+    if (empty($block_rules) || !is_array($block_rules)) {
+        return;
+    }
+    
+    // Get the post content
+    $post = get_post($post_id);
+    if (!$post || empty($post->post_content)) {
+        // If content is empty but we have rules, clean them up
+        delete_post_meta($post_id, '_codi_restrict_blocks');
+        return;
+    }
+    
+    // Parse blocks from post content to find all restrictionIds
+    $blocks = parse_blocks($post->post_content);
+    $active_restriction_ids = [];
+    
+    // Recursively extract restrictionIds from blocks (improved traversal)
+    $extract_restriction_ids = function($blocks) use (&$extract_restriction_ids, &$active_restriction_ids) {
+        if (!is_array($blocks)) {
+            return;
+        }
+        
+        foreach ($blocks as $block) {
+            // Skip if not a valid block array
+            if (!is_array($block)) {
+                continue;
+            }
+            
+            // Check if this block has a restrictionId attribute
+            if (isset($block['attrs']['restrictionId']) && !empty($block['attrs']['restrictionId'])) {
+                $restriction_id = $block['attrs']['restrictionId'];
+                // Avoid duplicates
+                if (!in_array($restriction_id, $active_restriction_ids)) {
+                    $active_restriction_ids[] = $restriction_id;
+                }
+            }
+            
+            // Check inner blocks (for columns, groups, etc.)
+            if (isset($block['innerBlocks']) && is_array($block['innerBlocks']) && !empty($block['innerBlocks'])) {
+                $extract_restriction_ids($block['innerBlocks']);
+            }
+        }
+    };
+    
+    // Extract all active restriction IDs
+    $extract_restriction_ids($blocks);
+    
+    // If no restriction IDs found in content but we have rules, clean them all
+    if (empty($active_restriction_ids)) {
+        delete_post_meta($post_id, '_codi_restrict_blocks');
+        return;
+    }
+    
+    // Filter out orphaned rules (rules that don't have corresponding blocks)
+    $cleaned_rules = [];
+    $orphaned_count = 0;
+    
+    foreach ($block_rules as $rule) {
+        if (empty($rule['restrictionId'])) {
+            // Remove rules without restrictionId
+            $orphaned_count++;
+            continue;
+        }
+        
+        if (in_array($rule['restrictionId'], $active_restriction_ids)) {
+            $cleaned_rules[] = $rule;
+        } else {
+            $orphaned_count++;
+        }
+    }
+    
+    // Only update if there were orphaned rules removed
+    if ($orphaned_count > 0) {
+        if (empty($cleaned_rules)) {
+            // Delete meta if no rules left
+            delete_post_meta($post_id, '_codi_restrict_blocks');
+        } else {
+            // Update with cleaned rules (already properly indexed)
+            update_post_meta($post_id, '_codi_restrict_blocks', $cleaned_rules);
+        }
+    }
+}
+
 
 /* INIT */
 
@@ -572,3 +693,4 @@ add_action('init', 'codi_restrict_login_form');
 add_filter('render_block', 'codi_restrict_render_block', 10, 2);
 add_action('enqueue_block_editor_assets', 'codi_restrict_block_script');
 add_action('init', 'codi_restrict_block_meta');
+add_action('save_post', 'codi_restrict_cleanup_orphaned_rules', 20);
