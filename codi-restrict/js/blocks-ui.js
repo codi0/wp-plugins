@@ -9,6 +9,31 @@
     // Global registry to track all restriction IDs across the session
     const restrictionIdRegistry = new Set();
 
+	/**
+	 * Check if we're currently editing a global template/template part
+	 */
+	function isGlobalTemplateContext() {
+		// Check for Site Editor (FSE)
+		if (wp.data.select('core/edit-site')) {
+			return true;
+		}
+		
+		// Check for template part editor
+		const currentPostType = wp.data.select('core/editor')?.getCurrentPostType?.();
+		if (currentPostType === 'wp_template' || currentPostType === 'wp_template_part') {
+			return true;
+		}
+		
+		// Check URL parameters for template editing
+		const urlParams = new URLSearchParams(window.location.search);
+		if (urlParams.get('postType') === 'wp_template_part' || 
+			urlParams.get('postType') === 'wp_template') {
+			return true;
+		}
+		
+		return false;
+	}
+
     /**
      * Generate a truly unique restrictionId
      */
@@ -252,6 +277,11 @@
                     editPost({ meta: newMeta });
                 }
             };
+
+			// Don't show restriction controls in global templates
+			if (isGlobalTemplateContext()) {
+				return el(BlockEdit, props);
+			}
 
             return el(
                 Fragment,

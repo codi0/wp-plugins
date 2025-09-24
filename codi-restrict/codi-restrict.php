@@ -3,14 +3,14 @@
 /*
 Plugin Name: Codi Restrict
 Description: Restrict post content by user role
-Version: 1.0.7
+Version: 1.0.8
 Author: codi0
 Author URI: https://github.com/codi0/wp-plugins/
 */
 
 
 //define constants
-define('CODI_RESTRICT_VERSION', '1.0.7');
+define('CODI_RESTRICT_VERSION', '1.0.8');
 
 
 /* PUBLIC API */
