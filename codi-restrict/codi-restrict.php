@@ -48,9 +48,11 @@ function codi_restrict_rules($post_id = null) {
 					$roles_required = !empty($rules['roles']) ? $rules['roles'] : [];
 					$roles_forbidden = !empty($rules['roles_forbidden']) ? $rules['roles_forbidden'] : [];
 					
-					// User must be logged in for role-based restrictions
-					if (!is_user_logged_in()) {
-						// Keep restriction active
+					if(!isset($_GET['restrict']) && codi_restrict_bypass_roles()) {
+						//allow roles through
+						$_cache[$post_id] = null;
+					} else if (!is_user_logged_in()) {
+						// Keep restriction active - user must be logged in
 					} else {
 						// Check required roles - user must have at least one (if any are specified)
 						$has_required = empty($roles_required) || array_intersect($roles_required, $current_roles);
@@ -86,6 +88,32 @@ function codi_restrict_message() {
 	return apply_filters(__FUNCTION__, $message, $post);
 }
 
+//let roles through
+function codi_restrict_bypass_roles() {
+	//set vars
+	$user = wp_get_current_user();
+	$skip = apply_filters(__FUNCTION__, [ 'administrator' ]);
+	//return
+	return array_intersect($user->roles, $skip);
+}
+
+function codi_restrict_custom_roles() {
+	//set custom roles for this page only?
+	if(isset($_GET['restrict']) && $_GET['restrict'] && codi_restrict_bypass_roles()) {
+		//set vars
+		$added = [];
+		$user = wp_get_current_user();
+		$tmp = array_map('trim', explode(',', $_GET['restrict']));
+		//add temp roles
+		foreach($tmp as $t) {
+			if($t && !in_array($t, $user->roles)) {
+				$added[] = $t;
+				$user->roles[] = $t;
+			}
+		}
+	}
+}
+
 
 /* FRONTEND HOOKS */
 
@@ -99,13 +127,6 @@ function codi_restrict_redirect() {
 	if(!in_array($rules['type'], [ 'login', 'redirect' ])) {
 		return;
 	}
-	//get user
-	$user = wp_get_current_user();
-	$current_roles = $user ? $user->roles : [];
-	//skip administrator?
-    if(in_array('administrator', $current_roles)) {
-	//	return false;
-    }
 	//filter url
 	$url = apply_filters(__FUNCTION__, $rules['action'] ?: wp_login_url());
 	//target is login?
@@ -472,11 +493,6 @@ function codi_restrict_block_denied($rule) {
 
     $user = wp_get_current_user();
     $current_roles = $user ? $user->roles : [];
-    
-    // Skip administrator?
-    if (in_array('administrator', $current_roles) ) {
-	//	return false;
-    }
 
     // Anonymous only - deny if logged in
     if ($rule['who'] === 'anonymous' && is_user_logged_in()) {
@@ -492,6 +508,11 @@ function codi_restrict_block_denied($rule) {
     if ($rule['who'] === 'roles') {
         $roles_required = !empty($rule['roles']) ? $rule['roles'] : [];
         $roles_forbidden = !empty($rule['roles_forbidden']) ? $rule['roles_forbidden'] : [];
+
+		//allow roles through?
+		if(!isset($_GET['restrict']) && codi_restrict_bypass_roles()) {
+			return false;
+		}
         
         // User must be logged in for role-based restrictions
         if (!is_user_logged_in()) {
@@ -689,6 +710,7 @@ add_action('save_post', 'codi_restrict_metabox_save');
 add_action('edit_attachment', 'codi_restrict_metabox_save');
 add_filter('wp_sitemaps_posts_query_args', 'codi_restrict_sitemap_query');
 add_action('init', 'codi_restrict_login_form');
+add_action('template_redirect', 'codi_restrict_custom_roles');
 
 add_filter('render_block', 'codi_restrict_render_block', 10, 2);
 add_action('enqueue_block_editor_assets', 'codi_restrict_block_script');
