@@ -61,10 +61,10 @@ class Admin {
         $this->field('cf_turnstile_secret', 'Cloudflare Turnstile Secret', 'oidc_sso_general', 'pwdless_security', 'password');
 
         // --- SSO tab ---
-        add_settings_section('pwdless_ms365', 'Microsoft 365', '__return_false', 'oidc_sso_sso');
-		$this->field('ms_tenant', 'Tenant ID', 'oidc_sso_sso', 'pwdless_ms365', 'text');
-		$this->field('ms_client_id', 'Client ID', 'oidc_sso_sso', 'pwdless_ms365', 'text');
-        $this->field('ms_client_secret', 'Client Secret', 'oidc_sso_sso', 'pwdless_ms365', 'password');
+        add_settings_section('pwdless_ms', 'Microsoft', '__return_false', 'oidc_sso_sso');
+		$this->field('ms_tenant', 'Tenant ID', 'oidc_sso_sso', 'pwdless_ms', 'text');
+		$this->field('ms_client_id', 'Client ID', 'oidc_sso_sso', 'pwdless_ms', 'text');
+        $this->field('ms_client_secret', 'Client Secret', 'oidc_sso_sso', 'pwdless_ms', 'password');
 
         add_settings_section('pwdless_google', 'Google', '__return_false', 'oidc_sso_sso');
         $this->field('google_client_id', 'Client ID', 'oidc_sso_sso', 'pwdless_google', 'text');

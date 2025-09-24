@@ -12,7 +12,7 @@ class Sso {
     public function __construct(Login $orchestrator) {
 		$this->orchestrator = $orchestrator;
         $this->providers = [
-            'microsoft365' => new Sso\Microsoft365($orchestrator),
+            'microsoft' => new Sso\Microsoft($orchestrator),
             'google' => new Sso\Google($orchestrator),
         ];
         add_action('wp', [ $this, 'route' ]);

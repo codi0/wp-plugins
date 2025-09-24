@@ -2,7 +2,7 @@
 
 namespace Pwdless\Sso;
 
-class Microsoft365 extends Base {
+class Microsoft extends Base {
 
 	protected $color = '#033c96';
 
