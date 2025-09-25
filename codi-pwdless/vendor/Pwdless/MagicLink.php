@@ -60,12 +60,27 @@ class MagicLink {
         if (empty($_GET[self::ACTION_PARAM]) || empty($_GET['token'])) {
             return;
         }
+        
+        if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
+			return;
+        }
 
         $token = sanitize_text_field(wp_unslash($_GET['token']));
         $email = $this->validate_token($token);
+
         if (!$email) {
             wp_die('Invalid or expired magic login link.');
         }
+
+		if (!isset($_GET['js'])) {
+			$url = $_SERVER['REQUEST_URI'] . '&js=1';
+			echo '<!DOCTYPE html><html><head><meta charset="utf-8">';
+			echo '<title>Redirecting…</title></head><body>';
+			echo '<noscript>This link requires JavaScript enabled.</noscript>';
+			echo '<script>window.location.replace(' . json_encode($url) . ');</script>';
+			echo '</body></html>';
+			exit();
+		}
 
         delete_transient($this->transient_key($token));
         

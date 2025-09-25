@@ -146,7 +146,7 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
         // 6. Success case
         if (!$message) {
             $login->magicLink->send_link($email);
-            $message      = "Please check your email. If you don't receive a login link shortly, please <a href=''>try again</a>.";
+            $message      = "Please check your email, including the <b>spam folder</b>.<br><br>If you don't receive a login link within a few minutes, please <a href=''>try again</a>.";
             $message_type = 'success';
             $showForm     = false;
         }
