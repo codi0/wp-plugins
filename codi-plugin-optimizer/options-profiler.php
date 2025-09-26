@@ -117,7 +117,7 @@ add_filter('pre_option', function($pre, $option, $default_value) {
 add_action('wp_footer', function() {
 	// Don't save if...
     if ( current_user_can('manage_options') ) {
-		return;
+	//	return;
     }
 
 	// Get current page slug
@@ -384,16 +384,18 @@ function cpo_run_autoload_update() {
         $freq = ( $meta['count'] / $total_slugs ) * 100.0;
         $should_autoload = $freq >= $auto_th || $meta['size'] <= $settings['size_lower_threshold'];
         
-        //cast default to "disabled"?
-        if($meta['default'] === false && stripos($opt, 'enabled') !== false) {
-			$meta['default'] = 0;
+        //try to cast default?
+        if($meta['default'] === false || $meta['default'] === null) {
+			if(stripos($opt, 'enable') !== false || stripos($opt, 'disable') !== false) {
+				$meta['default'] = 0;
+			} else {
+				$meta['default'] = false;
+			}
         }
 
-		//create option?
-		if($current === null && !in_array($meta['default'], [ null, false ], true)) {
-			if (!$settings['test_mode']) {
-				update_option($opt, $meta['default'], $should_autoload);
-			}
+		//try to create option?
+		if($current === null && !$settings['test_mode']) {
+			update_option($opt, $meta['default'], $should_autoload);
 		}
             
 		if ( $should_autoload && $current && !in_array($current, [ 'yes', 'on', 'auto-on', 'auto' ]) ) {

@@ -56,52 +56,49 @@ class MagicLink {
 		return add_query_arg($args, $this->orchestrator->get_base_url());
 	}
 
-    public function maybe_handle_login() {
+    public function maybe_handle_login() { 
         if (empty($_GET[self::ACTION_PARAM]) || empty($_GET['token'])) {
             return;
         }
         
         if ($_SERVER['REQUEST_METHOD'] !== 'GET') {
 			return;
-        }
+        }      
+        
+        if (!is_user_logged_in()) {
 
-        $token = sanitize_text_field(wp_unslash($_GET['token']));
-        $email = $this->validate_token($token);
+			$token = sanitize_text_field(wp_unslash($_GET['token']));
+			$email = $this->validate_token($token);
 
-        if (!$email) {
-            wp_die('Invalid or expired magic login link.');
-        }
+			if (!$email) {
+				wp_die('Invalid or expired magic login link. <a href="' . esc_attr($this->orchestrator->get_base_url()) . '">Request a new link</a>.');
+			}
+			
+			if (!isset($_GET['js'])) {
+				include(CODI_PWDLESS_PLUGIN_DIR . '/tpl/magic.html');
+				exit();
+			} 
 
-		if (!isset($_GET['js'])) {
-			$url = $_SERVER['REQUEST_URI'] . '&js=1';
-			echo '<!DOCTYPE html><html><head><meta charset="utf-8">';
-			echo '<title>Redirecting…</title></head><body>';
-			echo '<noscript>This link requires JavaScript enabled.</noscript>';
-			echo '<script>window.location.replace(' . json_encode($url) . ');</script>';
-			echo '</body></html>';
-			exit();
+			delete_transient($this->transient_key($token));
+			
+			$identity = [
+				'email' => $email,
+			];
+
+			$settings = get_option('oidc_sso', []);
+
+			$user = $this->orchestrator->login_or_register($identity, [
+				'roles' => $settings['default_roles'] ?? 'subscriber',
+			]);
+
+			if (is_wp_error($user)) {
+				wp_die($user);
+			}
+			
+			$this->throttle->clear_history($email);
+
 		}
 
-        delete_transient($this->transient_key($token));
-        
-        $identity = [
-			'email' => $email,
-        ];
-
-		$settings = get_option('oidc_sso', []);
-
-        // Hand off to orchestrator for unified flow
-        $user = $this->orchestrator->login_or_register($identity, [
-			'roles' => $settings['default_roles'] ?? 'subscriber',
-        ]);
-
-        if (is_wp_error($user)) {
-            wp_die($user);
-        }
-        
-        $this->throttle->clear_history($email);
-
-        // Redirect if orchestrator didn't already
         wp_safe_redirect($this->orchestrator->get_redirect_url());
         exit;
     }

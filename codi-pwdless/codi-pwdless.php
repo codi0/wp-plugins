@@ -11,6 +11,10 @@ Author URI: https://github.com/codi0/wp-plugins/
 defined('ABSPATH') or die;
 
 
+/* CONSTANTS */
+
+define('CODI_PWDLESS_PLUGIN_DIR', __DIR__);
+
 
 /* AUTOLOADER */
 
