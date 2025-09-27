@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Complete Login</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            min-height: 100vh;
+            min-width: 320px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: rgba(255, 255, 255, 0.95);
+            padding: 40px;
+            text-align: center;
+            max-width: 400px;
+            width: 100%;
+            transform: translateY(20px);
+            opacity: 0;
+            animation: slideIn 0.6s ease-out forwards;
+        }
+        
+        @keyframes slideIn {
+            to {
+                transform: translateY(0);
+                opacity: 1;
+            }
+        }
+        
+        .icon {
+            width: 80px;
+            height: 80px;
+            margin: 0 auto 30px;
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        
+        .icon svg {
+            width: 40px;
+            height: 40px;
+            fill: white;
+        }
+        
+        h1 {
+            font-size: 28px;
+            color: #333;
+            margin-bottom: 15px;
+            font-weight: 600;
+        }
+        
+        .subtitle {
+            color: #666;
+            font-size: 16px;
+            line-height: 1.5;
+            margin-bottom: 35px;
+        }
+        
+        .continue-btn {
+            background: linear-gradient(135deg, #667eea, #764ba2);
+            color: white;
+            border: none;
+            padding: 15px 40px;
+            font-size: 16px;
+            font-weight: 600;
+            border-radius: 50px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+            outline: none;
+        }
+        
+        .continue-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 15px 30px rgba(102, 126, 234, 0.4);
+        }
+        
+        .continue-btn:active {
+            transform: translateY(0);
+        }
+        
+        .security-note {
+            margin-top: 25px;
+            font-size: 14px;
+            color: #888;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 8px;
+        }
+        
+        .security-icon {
+            width: 16px;
+            height: 16px;
+            fill: #888;
+        }
+        
+        .noscript-fallback {
+            background: #fff3cd;
+            color: #856404;
+            padding: 20px;
+            border-radius: 10px;
+            margin: 20px;
+            border: 1px solid #ffeaa7;
+            text-align: center;
+            font-weight: 500;
+        }
+
+		@media (min-width: 400px) {
+
+			body {
+				background: #f8f8f8;
+				padding: 20px;
+			}
+			
+			.container {
+				box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+				backdrop-filter: blur(10px);
+				border-radius: 20px;			
+			}
+
+		}
+    </style>
+</head>
+<body>
+    <noscript>
+        <div class="noscript-fallback">
+            <strong>JavaScript Required</strong><br>
+            Please enable JavaScript in your browser to complete the login process.
+        </div>
+    </noscript>
+    
+    <div class="container" id="loginContainer" style="display: none;">
+        <div class="icon">
+            <svg viewBox="0 0 24 24">
+                <path d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M12,7C13.4,7 14.8,8.6 14.8,10.1V11.1C15.4,11.4 16,12 16,12.8V16.2C16,17.1 15.1,18 14.2,18H9.8C8.9,18 8,17.1 8,16.2V12.8C8,12 8.6,11.4 9.2,11.1V10.1C9.2,8.6 10.6,7 12,7M12,8.2C11.2,8.2 10.5,8.7 10.5,10.1V11.1H13.5V10.1C13.5,8.7 12.8,8.2 12,8.2Z"/>
+            </svg>
+        </div>
+        
+        <h1>Complete login</h1>
+        <p class="subtitle">
+            Click the button below to securely complete your login and access your account.
+        </p>
+        
+        <button id="continueBtn" class="continue-btn">
+            Continue
+        </button>
+        
+        <div class="security-note">
+            <svg class="security-icon" viewBox="0 0 24 24">
+                <path d="M12,1L3,5V11C3,16.55 6.84,21.74 12,23C17.16,21.74 21,16.55 21,11V5L12,1M10,17L6,13L7.41,11.59L10,14.17L16.59,7.58L18,9L10,17Z"/>
+            </svg>
+            Secure authentication in progress
+        </div>
+    </div>
+
+    <script>
+	window.addEventListener('load', function() {
+        
+		var container = document.getElementById('loginContainer');
+		var button = document.getElementById('continueBtn');
+			
+		button.focus();
+		container.style.display = 'block';
+            
+		button.addEventListener('click', function() {
+			//add loading state
+			const btn = this;
+			const originalText = btn.textContent;
+			btn.textContent = 'Logging in...';
+			btn.disabled = true;
+			btn.style.opacity = '0.7';
+			//build final url
+			const currentUrl = new URL(window.location.href);
+			currentUrl.searchParams.set('js', '1');
+			const loginUrl = currentUrl.toString();
+			//do redirect
+			setTimeout(function() {
+				window.location.href = loginUrl;
+			}, 300);
+		});
+	
+	});
+    </script>
+</body>
+</html>
