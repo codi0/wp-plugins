@@ -74,10 +74,10 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
     ], $atts);
 
     // State
-    $email        = '';
-    $message      = '';
+    $message = '';
     $message_type = '';
-    $showForm     = true;
+    $showForm = true;
+    $email = $_POST['log'] ?? '';
     
     // Has oidc error?
     if(isset($_GET['oidc_error']) && $_GET['oidc_error']) {
@@ -88,22 +88,22 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
     // Process POST
     if ($_SERVER['REQUEST_METHOD'] === 'POST' && isset($_POST['log'])) {
 
-        // 1. Email format
+        // Email check
         if (!$message) {
-			$email = sanitize_email($_POST['log']);
-			if (!is_email($email)) {
+			$validEmail = sanitize_email($email);
+			if (!$validEmail || !is_email($validEmail)) {
 				$message      = 'Please enter a valid email address';
 				$message_type = 'error';
 			}
 		}
 
-        // 2. Nonce check
+        // Nonce check
         if (!$message && !wp_verify_nonce($_POST['_nonce'], 'codi_pwdless')) {
-            $message      = 'Verification failed. Please try again.';
+            $message      = "Captcha verification failed. Please try again.";
             $message_type = 'error';
         }
 
-        // 3. Honeypot check
+        // Honeypot check
         if (!$message) {
             $honeypot = $_POST['pwd'] ?? 'empty';
             if (!empty($honeypot)) {
@@ -112,7 +112,7 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
             }
         }
 
-        // 4. Cloudflare Turnstile
+        // Cloudflare turnstile check
         if (!$message && $cfSiteKey && $cfSecretKey) {
             $cfOk    = false;
             $cfToken = $_POST['cf-turnstile-response'] ?? '';
@@ -137,29 +137,27 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
             }
         }
 
-        // 5. Throttle check
+        // Throttle check
         if (!$message && $useThrottle && ($wait = $login->magicLink->check_wait($email))) {
-            if ($wait['email'] > 0) {
-                $message = 'You have requested too many links for this email. Please wait <b><span class="wait-counter">' . $wait['email'] . '</span></b> seconds before trying again.';
+            if ($wait['email'] > 0 && $wait['email'] >= $wait['ip']) {
+                $message = "Too many login requests. Please wait <b><span class='wait-counter'>" . $wait['email'] . "</span></b> seconds.";
             } else {
-                $message = 'Too many requests from your network. Please try again later.';
+				$message = "Too many login requests. Please try again later.";
             }
             $message_type = 'error';
         }
 
-        // 6. Success case
+        // Success
         if (!$message) {
             $login->magicLink->send_link($email);
-            $message      = "Please check your email, including the <b>spam folder</b>.<br><br>If you don't receive a login link within a few minutes, please <a href=''>try again</a>.";
+            $message      = "Please check your email and click on the login link. Don't forget to check your <b>spam folder</b>.<br><br>If you've used the wrong address or don't receive the email within a few minutes, please <a href=''>try again</a>.<br><br><b>{$email}</b>";
             $message_type = 'success';
             $showForm     = false;
         }
     }
 
-    // Render
     ob_start();
 
-    // Styles (moved from inline)
     ?>
     <style>
         .codi-pwdless input:hover,
@@ -203,7 +201,7 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
     if ($message) {
         $message = '<p class="notice ' . esc_attr($message_type ?: 'error') . '">' . $message . '</p>';
     }
-    
+
     // SSO Html
     $ssoHtml = $login->sso->get_html();
 
@@ -211,6 +209,7 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
     if ($showForm) {
         ?>
         <div class="codi-pwdless">
+        
 			<?= $message ?>
         
             <?= $ssoHtml ?>
@@ -253,25 +252,31 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
 			var submit = form.querySelector('[type="submit"]');
 			var timer = counter ? parseInt(counter.textContent) : 0;
 			
+			var disableSubmit = function(b) {
+				submit.disabled = b;
+				submit.value = b ? 'Please wait...' : 'Continue with email';
+			}
+			
 			if(timer > 0) {
-				submit.disabled = true;
+				disableSubmit(true);
 				var tid = setInterval(function() {
 					timer--;
 					counter.textContent = timer;
 					if(timer <= 0) {
 						clearInterval(tid);
-						submit.disabled = false;
+						disableSubmit(false);
 					}
 				}, 1000);
 			}
 
             form.addEventListener('submit', function(e) {
-                submit.disabled = true;
+                disableSubmit(true);
             });
 
             window.cfReady = function(c, d) {
 				var n = counter ? counter.textContent : 0;
-				submit.disabled = (n > 0) || (!!d);
+				var b = (n > 0) || (!!d);
+				disableSubmit(b);
             }
             
             <?php if ($cfSiteKey && $cfSecretKey) : ?>

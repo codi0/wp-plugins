@@ -17,7 +17,11 @@ class MagicLink {
     }
 
 	public function check_wait($email, $saveHistory = true) {
-		return $this->throttle->check_wait($email, $_SERVER['REMOTE_ADDR'], $saveHistory);
+		if ($saveHistory) {
+			$this->throttle->record_attempt($email, $_SERVER['REMOTE_ADDR']);
+		}
+		
+		return $this->throttle->check_wait($email, $_SERVER['REMOTE_ADDR']);
 	}
 
     public function send_link($email) {
