@@ -53,7 +53,7 @@ class Sso {
 			$color = $provider->get_color();
             $url = add_query_arg($args, $this->orchestrator->get_base_url());
 
-            $out .= '<a class="provider ' . esc_attr($id) . '" href="' . esc_url($url) . '" style="display:block; padding:10px; border:1px solid #0a0a0a; border-radius:10px; color:#fff; background:' . $color . '; margin-bottom:15px; text-align:center; text-decoration:none;">' . esc_html($label) . '</a>';
+            $out .= '<a class="provider ' . esc_attr($id) . '" href="' . esc_url($url) . '" target="_top" style="display:block; padding:10px; border:1px solid #0a0a0a; border-radius:10px; color:#fff; background:' . $color . '; margin-bottom:15px; text-align:center; text-decoration:none;">' . esc_html($label) . '</a>';
         }
         if($out) {
 			$out = '<div class="sso-buttons">' . $out . '</div>';
