@@ -306,3 +306,124 @@ add_shortcode('codi_pwdless_logout', function() {
     wp_redirect(wp_login_url());
     exit();
 });
+
+add_action('wp_footer', function() {
+	global $post;
+	//check embed settings
+	$settings = get_option('oidc_sso', []);
+	$allow_embed = $settings['allow_embed'] ?? false;
+	//allow embed?
+	if(!$allow_embed) {
+		return;
+	}
+	?>
+	<script>
+	document.addEventListener('DOMContentLoaded', function() {
+		if(window.self === window.top) {
+			return;
+		}
+		var wpIframe = {
+			width: document.documentElement.scrollWidth,
+			height: document.documentElement.scrollHeight,
+			href: "<?= home_url($_SERVER['REQUEST_URI']); ?>",
+			userId: <?= get_current_user_id(); ?>
+		};
+		window.top.postMessage({ wpIframe: wpIframe }, '*');
+	});
+	</script>
+	<?php
+	//is embed request?
+	if(!isset($_GET['embed'])) {
+		return;
+	}
+	//has login form?
+	if(!$post || !has_shortcode($post->post_content, 'codi_pwdless_login')) {
+		return;
+	}
+	?>
+	<style>
+	html { height: auto; min-height: auto; }
+	body { height: auto; min-height: auto; }
+	body > .wp-site-blocks { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
+	body > .entry-content, body > .wp-site-blocks > .entry-content { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
+	body > header, body > .wp-site-blocks > header { display: none; }
+	body > footer, body > .wp-site-blocks > footer { display: none; }
+	</style>
+	<?php
+}, 999);
+
+//restrict iframe usage
+add_action('send_headers', function() {
+	//check embed settings
+	$settings = get_option('oidc_sso', []);
+	$embed_domains = $settings['embed_domains'] ?? [];
+	//set csp header?
+	if($embed_domains) {
+		$embed_domains = str_replace("\r\n", "\n", $embed_domains);
+		$embed_domains = str_replace("\n", " ", $embed_domains);
+		header("Content-Security-Policy: frame-ancestors 'self' " . $embed_domains . ";");
+	}
+});
+
+//overwrite set auth cookie
+if(!function_exists('wp_set_auth_cookie')) {
+	function wp_set_auth_cookie( $user_id, $remember = false, $secure = '', $token = '' ) {
+		if ( $remember ) {
+			$expiration = time() + apply_filters( 'auth_cookie_expiration', 14 * DAY_IN_SECONDS, $user_id, $remember );
+			$expire = $expiration + ( 12 * HOUR_IN_SECONDS );
+		} else {
+			$expiration = time() + apply_filters( 'auth_cookie_expiration', 2 * DAY_IN_SECONDS, $user_id, $remember );
+			$expire     = 0;
+		}
+
+		if ( '' === $secure ) {
+			$secure = is_ssl();
+		}
+
+		$secure_logged_in_cookie = $secure && 'https' === parse_url( get_option( 'home' ), PHP_URL_SCHEME );
+		$secure = apply_filters( 'secure_auth_cookie', $secure, $user_id );
+		$secure_logged_in_cookie = apply_filters( 'secure_logged_in_cookie', $secure_logged_in_cookie, $user_id, $secure );
+
+		if ( $secure ) {
+			$auth_cookie_name = SECURE_AUTH_COOKIE;
+			$scheme           = 'secure_auth';
+		} else {
+			$auth_cookie_name = AUTH_COOKIE;
+			$scheme           = 'auth';
+		}
+
+		if ( '' === $token ) {
+			$manager = WP_Session_Tokens::get_instance( $user_id );
+			$token   = $manager->create( $expiration );
+		}
+
+		$auth_cookie      = wp_generate_auth_cookie( $user_id, $expiration, $scheme, $token );
+		$logged_in_cookie = wp_generate_auth_cookie( $user_id, $expiration, 'logged_in', $token );
+
+		do_action( 'set_auth_cookie', $auth_cookie, $expire, $expiration, $user_id, $scheme, $token );
+		do_action( 'set_logged_in_cookie', $logged_in_cookie, $expire, $expiration, $user_id, 'logged_in', $token );
+
+		if ( ! apply_filters( 'send_auth_cookies', true, $expire, $expiration, $user_id, $scheme, $token ) ) {
+			return;
+		}
+		
+		//FUNCTION UPDATED BELOW THIS POINT
+
+		//don't change admin cookie
+		setcookie( $auth_cookie_name, $auth_cookie, $expire, ADMIN_COOKIE_PATH, COOKIE_DOMAIN, $secure, true );
+		
+		//check embed settings
+		$settings = get_option('oidc_sso', []);
+		$allow_embed = $settings['allow_embed'] ?? false;
+		
+		//set same site attribute
+		$sameSite = $allow_embed ? 'None' : '';
+
+		//set cookies with same site attribute
+		setcookie( $auth_cookie_name, $auth_cookie, [ "expires" => $expire, "path" => PLUGINS_COOKIE_PATH, "domain" => COOKIE_DOMAIN, "secure" => $secure, "httponly" => true, "SameSite" => $sameSite ] );
+		setcookie( LOGGED_IN_COOKIE, $logged_in_cookie, [ "expires" => $expire, "path" => COOKIEPATH, "domain" => COOKIE_DOMAIN, "secure" => $secure_logged_in_cookie, "httponly" => true, "SameSite" => $sameSite ] );
+		if ( COOKIEPATH !== SITECOOKIEPATH ) {
+			setcookie( LOGGED_IN_COOKIE, $logged_in_cookie, [ "expires" => $expire, "path" => SITECOOKIEPATH, "domain" => COOKIE_DOMAIN, "secure" => $secure_logged_in_cookie, "httponly" => true, "SameSite" => $sameSite ] );
+		}
+	}
+}

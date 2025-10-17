@@ -23,15 +23,23 @@ class Admin {
 
     public function register_settings() {
         register_setting('oidc_sso', 'oidc_sso', [
-			'sanitize_callback' => function($input) {
+			'sanitize_callback' => function($postData) {
 				//get current data
 				$existing = get_option('oidc_sso', []);
 				//merge new input data
-				$input = array_merge( (array) $existing, (array) $input );
+				$input = array_merge( (array) $existing, (array) $postData );
 				//remove old keys
 				foreach($input as $k => $v) {
 					if(strpos($k, 'pwdless_') === 0) {
 						unset($input[$k]);
+					}
+				}
+				//disable checkboxes?
+				if(isset($postData['cf_turnstile_key'])) {
+					foreach([ 'block_wp_login', 'allow_embed', 'enable_throttle' ] as $k) {
+						if(!isset($postData[$k]) && isset($input[$k]) && $input[$k]) {
+							$input[$k] = 0;
+						}
 					}
 				}
 				//check default emails
@@ -59,6 +67,11 @@ class Admin {
         $this->field('enable_throttle', 'Enable attempt throttling?', 'oidc_sso_general', 'pwdless_security', 'checkbox');
         $this->field('cf_turnstile_key', 'Cloudflare Turnstile Site Key', 'oidc_sso_general', 'pwdless_security', 'text');
         $this->field('cf_turnstile_secret', 'Cloudflare Turnstile Secret', 'oidc_sso_general', 'pwdless_security', 'password');
+
+        add_settings_section('pwdless_embed', 'Embed', '__return_false', 'oidc_sso_general');
+        $this->field('allow_embed', 'Allow embedded login?', 'oidc_sso_general', 'pwdless_embed', 'checkbox');
+        $this->field('embed_domains', 'Allowed parent domains<br><small>(one domain per line)</small>', 'oidc_sso_general', 'pwdless_embed', 'textarea');
+       
 
         // --- SSO tab ---
         add_settings_section('pwdless_ms', 'Microsoft', '__return_false', 'oidc_sso_sso');
@@ -103,7 +116,7 @@ class Admin {
 				);
 			} else if ($type == 'textarea') {
 				printf(
-					'<textarea name="oidc_sso[%s]" rows="10" cols="50" class="large-text code">%s</textarea>',
+					'<textarea name="oidc_sso[%s]" rows="10" cols="50" class="large-text" style="max-width:500px;">%s</textarea>',
 					esc_attr($key),
 					esc_textarea($val)
 				);
