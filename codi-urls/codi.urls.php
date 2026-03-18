@@ -46,7 +46,7 @@ function codi_urls_add_redirect($old, $new, $code=302) {
 	$redirects = codi_urls_load_redirects();
 	//add redirect
 	$redirects[] = [
-		'code' => $code,
+		'code' => intval($code) ?: 302,
 		'old' => $old,
 		'new' => $new,
 	];
@@ -84,7 +84,7 @@ function codi_urls_load_redirects() {
 					//add to array?
 					if(count($parts) == 3) {
 						$res[] = [
-							'code' => (int) str_replace([ '[L,R=', ']' ], '', $parts[2]),
+							'code' => intval(str_replace([ '[L,R=', ']' ], '', $parts[2])) ?: 302,
 							'old' => (string) str_replace([ '^/', '^' ], '/', $parts[0]),
 							'new' => (string) $parts[1],
 						];
@@ -171,8 +171,9 @@ function codi_urls_save_redirects(array $redirects) {
 			$str .= '<IfModule mod_rewrite.c>' . "\n";
 			$str .= '	RewriteEngine On' . "\n";
 			foreach($redirects as $key => $val) {
+				$code = intval($val["code"]) === 301 ? 301 : 302;
 				$str .= '	RewriteCond %{HTTP_HOST} ^' . $domain . '$' . "\n";
-				$str .= '	RewriteRule ^' . ltrim($val['old'], '/') . ' ' . $val["new"] . ' [L,R=' . $val["code"] . ']' . "\n";
+				$str .= '	RewriteRule ^' . ltrim($val['old'], '/') . ' ' . $val["new"] . ' [L,R=' . $code . ']' . "\n";
 			}
 			$str .= '</IfModule>' . "\n";	
 			$str .= '## END REDIRECTS: ' . $domain . ' ##';
