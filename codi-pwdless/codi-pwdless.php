@@ -35,8 +35,26 @@ $login = new \Pwdless\Login;
 $admin = new \Pwdless\Admin;
 
 
-/* BLOCK WP-LOGIN */
+/* HOOKS */
 
+//check logged in status
+add_action('plugins_loaded', function() {
+	//run check?
+	if(isset($_GET['status-check'])) {
+		//check embed settings
+		$settings = get_option('oidc_sso', []);
+		$allow_embed = $settings['allow_embed'] ?? false;
+		//allow embed?
+		if(!$allow_embed) {
+			return;
+		}
+		//print 1 or 0
+		echo is_user_logged_in() ? 1 : 0;
+		exit();
+	}
+});
+
+//block wp-login.php
 add_action('login_init', function() use($login) {
 	if(isset($_GET['action']) && $_GET['action'] === 'logout') {
 		return;
@@ -55,8 +73,67 @@ add_action('login_init', function() use($login) {
 	}
 });
 
+//restrict iframe usage
+add_action('send_headers', function() {
+	//check embed settings
+	$settings = get_option('oidc_sso', []);
+	$embed_domains = $settings['embed_domains'] ?? [];
+	//set csp header?
+	if($embed_domains) {
+		$embed_domains = str_replace("\r\n", "\n", $embed_domains);
+		$embed_domains = str_replace("\n", " ", $embed_domains);
+		header("Content-Security-Policy: frame-ancestors 'self' " . $embed_domains . ";");
+	}
+});
 
-/* SHORTCODE */
+//allow embedded login
+add_action('wp_footer', function() {
+	global $post;
+	//check embed settings
+	$settings = get_option('oidc_sso', []);
+	$allow_embed = $settings['allow_embed'] ?? false;
+	//allow embed?
+	if(!$allow_embed) {
+		return;
+	}
+	?>
+	<script>
+	document.addEventListener('DOMContentLoaded', function() {
+		if(window.self === window.top) {
+			return;
+		}
+		var wpIframe = {
+			width: document.documentElement.scrollWidth,
+			height: document.documentElement.scrollHeight,
+			href: "<?= home_url($_SERVER['REQUEST_URI']); ?>",
+			userId: <?= get_current_user_id(); ?>
+		};
+		window.top.postMessage({ wpIframe: wpIframe }, '*');
+	});
+	</script>
+	<?php
+	//is embed request?
+	if(!isset($_GET['embed'])) {
+		return;
+	}
+	//has login form?
+	if(!$post || !has_shortcode($post->post_content, 'codi_pwdless_login')) {
+		return;
+	}
+	?>
+	<style>
+	html { height: auto; min-height: auto; }
+	body { height: auto; min-height: auto; }
+	body > .wp-site-blocks { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
+	body > .entry-content, body > .wp-site-blocks > .entry-content { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
+	body > header, body > .wp-site-blocks > header { display: none; }
+	body > footer, body > .wp-site-blocks > footer { display: none; }
+	</style>
+	<?php
+}, 999);
+
+
+/* SHORTCODES */
 
 add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
     // Settings
@@ -307,63 +384,8 @@ add_shortcode('codi_pwdless_logout', function() {
     exit();
 });
 
-add_action('wp_footer', function() {
-	global $post;
-	//check embed settings
-	$settings = get_option('oidc_sso', []);
-	$allow_embed = $settings['allow_embed'] ?? false;
-	//allow embed?
-	if(!$allow_embed) {
-		return;
-	}
-	?>
-	<script>
-	document.addEventListener('DOMContentLoaded', function() {
-		if(window.self === window.top) {
-			return;
-		}
-		var wpIframe = {
-			width: document.documentElement.scrollWidth,
-			height: document.documentElement.scrollHeight,
-			href: "<?= home_url($_SERVER['REQUEST_URI']); ?>",
-			userId: <?= get_current_user_id(); ?>
-		};
-		window.top.postMessage({ wpIframe: wpIframe }, '*');
-	});
-	</script>
-	<?php
-	//is embed request?
-	if(!isset($_GET['embed'])) {
-		return;
-	}
-	//has login form?
-	if(!$post || !has_shortcode($post->post_content, 'codi_pwdless_login')) {
-		return;
-	}
-	?>
-	<style>
-	html { height: auto; min-height: auto; }
-	body { height: auto; min-height: auto; }
-	body > .wp-site-blocks { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
-	body > .entry-content, body > .wp-site-blocks > .entry-content { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
-	body > header, body > .wp-site-blocks > header { display: none; }
-	body > footer, body > .wp-site-blocks > footer { display: none; }
-	</style>
-	<?php
-}, 999);
 
-//restrict iframe usage
-add_action('send_headers', function() {
-	//check embed settings
-	$settings = get_option('oidc_sso', []);
-	$embed_domains = $settings['embed_domains'] ?? [];
-	//set csp header?
-	if($embed_domains) {
-		$embed_domains = str_replace("\r\n", "\n", $embed_domains);
-		$embed_domains = str_replace("\n", " ", $embed_domains);
-		header("Content-Security-Policy: frame-ancestors 'self' " . $embed_domains . ";");
-	}
-});
+/* PLUGGABLE */
 
 //overwrite set auth cookie
 if(!function_exists('wp_set_auth_cookie')) {
