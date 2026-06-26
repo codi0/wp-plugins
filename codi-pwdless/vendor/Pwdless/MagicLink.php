@@ -75,7 +75,8 @@ class MagicLink {
 			$email = $this->validate_token($token);
 
 			if (!$email) {
-				wp_die('Invalid or expired magic login link. <a href="' . esc_attr($this->orchestrator->get_base_url()) . '">Request a new link</a>.');
+				echo 'Invalid or expired magic login link. <a href="' . esc_attr($this->orchestrator->get_base_url()) . '">Request a new link</a>.';
+				exit();
 			}
 			
 			if (!isset($_GET['js'])) {

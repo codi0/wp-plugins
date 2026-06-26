@@ -123,8 +123,16 @@ function codi_restrict_redirect() {
 	if(!($rules = codi_restrict_rules())) {
 		return;
 	}
-	//can redirect?
+	//is redirect rule?
 	if(!in_array($rules['type'], [ 'login', 'redirect' ])) {
+		return;
+	}
+	//is GET method?
+	if($_SERVER['REQUEST_METHOD'] !== 'GET') {
+		return;
+	}
+	//is ajax call?
+	if(wp_doing_ajax()) {
 		return;
 	}
 	//filter url
@@ -137,7 +145,7 @@ function codi_restrict_redirect() {
 			$url = add_query_arg('redirect_to', rawurlencode($_SERVER['REQUEST_URI']), $url);
 		}
 	}
-	//add $_GET?
+	//add query params?
 	if($_GET && stripos($url, 'redirect') === false) {
 		//set args
 		$args = $_GET;
@@ -148,11 +156,9 @@ function codi_restrict_redirect() {
 		//update url
 		$url = add_query_arg(array_map('rawurlencode', $args), $url);
 	}
-	//redirect?
-	if(!wp_doing_ajax()) {
-		wp_safe_redirect($url);
-		exit();
-	}
+	//redirect
+	wp_safe_redirect($url);
+	exit();
 }
 
 //add message to restricted content
