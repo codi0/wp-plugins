@@ -87,34 +87,29 @@ function codi_contact_shortcode($atts, $content='') {
 	$form .= '<input type="hidden" name="_action" value="contact">';
 	$form .= wp_nonce_field('contact_form', '_nonce', true, false);
 	$form .= apply_filters('codi_contact_form_top', '', $atts);
+	$form .= '<div class="field subject" style="display:none;">';
+	$form .= '<input type="text" name="_subject" placeholder="Enter your subject " value="' . esc_attr($honeypot) . '">';
+	$form .= '</div>';
 	if(!is_user_logged_in()) {
-		$form .= '<div class="field name">';
-		$form .= '<label for id="contact-name">' . __('Your name') . '</label>';
-		$form .= '<input type="text" name="_name" id="contact-name" value="' . esc_attr($name) . '">';
-		$form .= '</div>';
 		$form .= '<div class="field email">';
-		$form .= '<label for id="contact-email">' . __('Your email') . '*</label>';
-		$form .= '<input type="text" name="_email" id="contact-email" value="' . esc_attr($email) . '">';
+		$form .= '<input type="text" name="_email" placeholder="Enter your email address" value="' . esc_attr($email) . '">';
 		$form .= '</div>';
 	} else {
 		$form .= '<p>Hi ' . esc_html($name) . ', add your message below:</p>';
 	}
-	$form .= '<div class="field subject" style="display:none;">';
-	$form .= '<label for id="contact-subject">' . __('Subject') . '</label>';
-	$form .= '<input type="text" name="_subject" id="contact-subject" value="' . esc_attr($honeypot) . '">';
-	$form .= '</div>';
 	$form .= apply_filters('codi_contact_form_middle', '', $atts);
 	$form .= '<div class="field message">';
-	if(!is_user_logged_in()) {
-		$form .= '<label for id="contact-message">' . __('Your message') . '*</label>';
-	}
-	$form .= '<textarea name="_message" id="contact-message">' . esc_html($message) . '</textarea>';
+	$form .= '<textarea name="_message" rows="5" cols="60" placeholder="Enter your message">' . esc_html($message) . '</textarea>';
 	$form .= '</div>';
 	$form .= apply_filters('codi_contact_form_bottom', '', $atts);
 	$form .= '<div class="field submit">';
-	$form .= '<input type="submit" value="' . __('Send message') . '">';
+	$form .= '<input type="submit" class="wp-element-button" value="' . __('Send message') . '">';
 	$form .= '</div>';
 	$form .= '</form>';
+	//wrap?
+	if($form) {
+		$form = '<div class="codi-contact">' . $form . '</div>';
+	}
 	//return
 	return $form;
 }

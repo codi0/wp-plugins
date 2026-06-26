@@ -28,7 +28,7 @@ function codi_debug_bar() {
 		'queries_log' => [],
 	];
 	//stop here?
-	if(!current_user_can('manage_options') && (!defined('WP_DEBUG') || !WP_DEBUG)) {
+	if(isset($_GET['embed']) || (!current_user_can('manage_options') && (!defined('WP_DEBUG') || !WP_DEBUG))) {
 		return;
 	}
 	//check prototypr?
