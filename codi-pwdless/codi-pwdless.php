@@ -122,10 +122,10 @@ add_action('wp_footer', function() {
 	}
 	?>
 	<style>
-	html { height: auto; min-height: auto; }
-	body { height: auto; min-height: auto; }
-	body > .wp-site-blocks { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
-	body > .entry-content, body > .wp-site-blocks > .entry-content { height: auto; min-height: auto; margin-top: 0; margin-bottom: 0; }
+	html, body, .codi-pwdless { height: 100%; margin: 0; padding: 0; }
+	body { display: grid; align-items:center; }
+	body > .wp-site-blocks { min-height: auto; margin: 0; padding: 0; }
+	body > .wp-site-blocks > .entry-content { margin: 0; padding: 0; }
 	body > header, body > .wp-site-blocks > header { display: none; }
 	body > footer, body > .wp-site-blocks > footer { display: none; }
 	</style>
@@ -264,7 +264,7 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
             width: 100%;
         }
         .codi-pwdless .field.submit input {
-			width: 100%;
+						width: 100%;
             padding: 10px;
             margin-top: 12px;
         }
