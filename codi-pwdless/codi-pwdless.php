@@ -54,6 +54,30 @@ add_action('plugins_loaded', function() {
 	}
 });
 
+//allow logged in redirect
+add_action('wp', function() {
+	global $post;
+	//get redirect url
+	$url = $_GET['redirect_to'] ?? '';
+	//has url?
+	if(!$url) {
+		return;
+	}
+	//is logged in?
+	if(!is_user_logged_in()) {
+		return;
+	}
+	//is login page?
+	if(!$post || !has_shortcode($post->post_content, 'codi_pwdless_login')) {
+		return;
+	}
+	//redirect now?
+	if($r = wp_validate_redirect($url)) {
+		wp_safe_redirect($r);
+		exit();
+	}
+});
+
 //block wp-login.php
 add_action('login_init', function() use($login) {
 	if(isset($_GET['action']) && $_GET['action'] === 'logout') {
