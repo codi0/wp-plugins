@@ -44,9 +44,23 @@ add_action('plugins_loaded', function() {
 		//check embed settings
 		$settings = get_option('oidc_sso', []);
 		$allow_embed = $settings['allow_embed'] ?? false;
+		$embed_domains = trim($settings['embed_domains'] ?? '');
 		//allow embed?
 		if(!$allow_embed) {
 			return;
+		}
+		//check domains?
+		if($embed_domains) {
+			//get origins
+			$origin = $_SERVER['HTTP_ORIGIN'] ?? '';
+			$allowed_origins = str_replace("\r\n", "\n", $embed_domains);
+			$allowed_origins = explode("\n", $allowed_origins);
+			//send CORS?
+			if($origin && in_array($origin, $allowed_origins, true)) {
+				header('Access-Control-Allow-Origin: ' . $origin);
+				header('Access-Control-Allow-Credentials: true');
+				header('Vary: Origin');
+			}
 		}
 		//print 1 or 0
 		echo is_user_logged_in() ? 1 : 0;
@@ -101,7 +115,7 @@ add_action('login_init', function() use($login) {
 add_action('send_headers', function() {
 	//check embed settings
 	$settings = get_option('oidc_sso', []);
-	$embed_domains = $settings['embed_domains'] ?? [];
+	$embed_domains = trim($settings['embed_domains'] ?? '');
 	//set csp header?
 	if($embed_domains) {
 		$embed_domains = str_replace("\r\n", "\n", $embed_domains);
