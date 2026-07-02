@@ -146,7 +146,59 @@ function codi_mail_admin_options() {
 	//send test?
 	if(isset($_POST['mail_test']) && check_admin_referer($page)) {
 		$test = $_POST['mail_test'];
-		$test['result'] = wp_mail($test['to'], $test['subject'], $test['message']);
+		$attachments = [];
+		$attachment_files = [];
+		$attachment_dirs = [];
+
+		if(!empty($_FILES['mail_test_attachments']['tmp_name'])) {
+			foreach($_FILES['mail_test_attachments']['tmp_name'] as $i => $tmp_name) {
+				if($i >= 2) {
+					break;
+				}
+
+				if(
+					empty($tmp_name) ||
+					!is_uploaded_file($tmp_name) ||
+					$_FILES['mail_test_attachments']['error'][$i] !== UPLOAD_ERR_OK
+				) {
+					continue;
+				}
+
+				$name = sanitize_file_name($_FILES['mail_test_attachments']['name'][$i]);
+
+				if(!$name) {
+					continue;
+				}
+
+				$dir = trailingslashit(get_temp_dir()) . uniqid('codi-mail-test-', true);
+
+				if(!wp_mkdir_p($dir)) {
+					continue;
+				}
+
+				$path = trailingslashit($dir) . $name;
+
+				if(move_uploaded_file($tmp_name, $path)) {
+					$attachments[] = $path;
+					$attachment_files[] = $path;
+					$attachment_dirs[] = $dir;
+				}
+			}
+		}
+
+		$test['result'] = wp_mail($test['to'], $test['subject'], $test['message'], [], $attachments);
+
+		foreach($attachment_files as $file) {
+			if(is_file($file)) {
+				unlink($file);
+			}
+		}
+
+		foreach($attachment_dirs as $dir) {
+			if(is_dir($dir)) {
+				rmdir($dir);
+			}
+		}
 	}
 	//default fields
 	$fields  = '<tr><td>About</td><td style="font-size:0.9em; font-style:italic;">Not sure which provider to choose? Give Amazon SES a try: <a href="https://blog.mailtrap.io/amazon-ses-explained/#Step-by-Step_setup" target="_blank">Amazon SES setup guide</a></td></tr>' . "\n";
@@ -170,7 +222,7 @@ function codi_mail_admin_options() {
 	echo '<input type="submit" class="button button-primary" value="' . __('Save Changes') . '">' . "\n";
 	echo '</form>' . "\n";
 	echo '<h3 id="mail_test" style="margin:50px 0 0 0;">Send test email</h3>' . "\n";
-	echo '<form name="test_mail" method="post" action="#mail_test">' . "\n";
+	echo '<form name="test_mail" method="post" action="#mail_test" enctype="multipart/form-data">' . "\n";
 	wp_nonce_field($page);
 	//show result?
 	if($test['result'] !== null) {
@@ -189,6 +241,8 @@ function codi_mail_admin_options() {
 	echo '<tr><td width="120">To</td><td><input type="text" name="mail_test[to]" size="50" value="' . esc_attr($test['to']) . '"></td></tr>' . "\n";
 	echo '<tr><td>Subject</td><td><input type="text" name="mail_test[subject]" size="50" value="' . esc_attr($test['subject']) . '"></td></tr>' . "\n";
 	echo '<tr><td>Message</td><td><textarea name="mail_test[message]" rows="5" cols="53">' . esc_html($test['message']) . '</textarea></td></tr>' . "\n";
+	echo '<tr><td>Attachment 1</td><td><input type="file" name="mail_test_attachments[]"></td></tr>' . "\n";
+	echo '<tr><td>Attachment 2</td><td><input type="file" name="mail_test_attachments[]"></td></tr>' . "\n";
 	echo '</table>' . "\n";
 	echo '<br>' . "\n";
 	echo '<input type="submit" class="button button-primary" value="' . __('Send test') . '">' . "\n";
