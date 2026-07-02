@@ -166,6 +166,7 @@ add_action('wp_footer', function() {
 	body > .wp-site-blocks > .entry-content { margin: 0; padding: 0; }
 	body > header, body > .wp-site-blocks > header { display: none; }
 	body > footer, body > .wp-site-blocks > footer { display: none; }
+	.codi-pwdless { padding: 10px; }
 	</style>
 	<?php
 }, 999);

@@ -1,0 +1,579 @@
+<?php
+/**
+*
+* Copyright (c) 2014, Daniel Zahariev.
+* Copyright (c) 2011, Dan Myers.
+* Parts copyright (c) 2008, Donovan Schonknecht.
+* All rights reserved.
+*
+* Redistribution and use in source and binary forms, with or without
+* modification, are permitted provided that the following conditions are met:
+*
+* - Redistributions of source code must retain the above copyright notice,
+*   this list of conditions and the following disclaimer.
+* - Redistributions in binary form must reproduce the above copyright
+*   notice, this list of conditions and the following disclaimer in the
+*   documentation and/or other materials provided with the distribution.
+*
+* THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+* AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
+* IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE
+* ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS BE
+* LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
+* CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
+* SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS
+* INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN
+* CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE)
+* ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN IF ADVISED OF THE
+* POSSIBILITY OF SUCH DAMAGE.
+*
+* This is a modified BSD license (the third clause has been removed).
+* The BSD license may be found here:
+* http://www.opensource.org/licenses/bsd-license.php
+*
+* Amazon Simple Email Service is a trademark of Amazon.com, Inc. or its affiliates.
+*
+* SimpleEmailService is based on Donovan Schonknecht's Amazon S3 PHP class, found here:
+* http://undesigned.org.za/2007/10/22/amazon-s3-php-class
+*
+* @copyright 2014 Daniel Zahariev
+* @copyright 2011 Dan Myers
+* @copyright 2008 Donovan Schonknecht
+*/
+
+/**
+* SimpleEmailService PHP class
+*
+* @link https://github.com/daniel-zahariev/php-aws-ses
+* @package AmazonSimpleEmailService
+* @version v0.9.1
+*/
+class SimpleEmailService
+{
+	/**
+	 * @link(AWS SES regions, https://docs.aws.amazon.com/general/latest/gr/ses.html)
+	 */
+	const AWS_CA_CENTRAL_1 = 'email.ca-central-1.amazonaws.com';
+	const AWS_AP_NORTHEAST_1 = 'email.ap-northeast-1.amazonaws.com';
+	const AWS_AP_NORTHEAST_2 = 'email.ap-northeast-2.amazonaws.com';
+	const AWS_AP_SOUTH_1 = 'email.ap-south-1.amazonaws.com';
+	const AWS_AP_SOUTHEAST_1 = 'email.ap-southeast-1.amazonaws.com';
+	const AWS_AP_SOUTHEAST_2 = 'email.ap-southeast-2.amazonaws.com';
+	const AWS_EU_CENTRAL_1 = 'email.eu-central-1.amazonaws.com';
+	const AWS_EU_WEST_1 = 'email.eu-west-1.amazonaws.com';
+	const AWS_EU_WEST_2 = 'email.eu-west-2.amazonaws.com';
+	const AWS_SA_EAST_1 = 'email.sa-east-1.amazonaws.com';
+	const AWS_US_EAST_1 = 'email.us-east-1.amazonaws.com';
+	const AWS_US_EAST_2 = 'email.us-east-2.amazonaws.com';
+	const AWS_US_GOV_WEST_1 = 'email.us-gov-west-1.amazonaws.com';
+	const AWS_US_WEST_2 = 'email.us-west-2.amazonaws.com';
+	
+	/**
+	 * Deprecated, available for backward compatibility
+	 */
+	const AWS_EU_WEST1 = 'email.eu-west-1.amazonaws.com';
+
+	const REQUEST_SIGNATURE_V3 = 'v4';  // For BW compatibility reasons.
+	const REQUEST_SIGNATURE_V4 = 'v4';
+
+	/**
+	 * AWS SES Target host of region
+	 */
+	protected $__host;
+
+	/**
+	 * AWS SES Access key
+	 */
+	protected $__accessKey;
+
+	/**
+	 * AWS Secret key
+	 */
+	protected $__secretKey;
+
+	/**
+	 * Enable/disable
+	 */
+	protected $__trigger_errors;
+
+	/**
+	 * Controls the reuse of CURL hander for sending a bulk of messages
+	 * @deprecated
+	 */
+	protected $__bulk_sending_mode = false;
+
+	/**
+	 * Optionally reusable SimpleEmailServiceRequest instance
+	 */
+	protected $__ses_request = null;
+
+	/**
+	 * Controls CURLOPT_SSL_VERIFYHOST setting for SimpleEmailServiceRequest's curl handler
+	 */
+	protected $__verifyHost = true;
+
+	/**
+	 * Controls CURLOPT_SSL_VERIFYPEER setting for SimpleEmailServiceRequest's curl handler
+	 */
+	protected $__verifyPeer = true;
+
+    /**
+     * @var string HTTP Request signature version
+     */
+	protected $__requestSignatureVersion;
+
+    /**
+     * Constructor
+     *
+     * @param string $accessKey Access key
+     * @param string $secretKey Secret key
+     * @param string $host Amazon Host through which to send the emails
+     * @param boolean $trigger_errors Trigger PHP errors when AWS SES API returns an error
+     * @param string $requestSignatureVersion Version of the request signature
+     *               Currently only V4 supported by AWS. Keeping parameter for BW compatibility reasons.
+     */
+	public function __construct($accessKey = null, $secretKey = null, $host = self::AWS_US_EAST_1, $trigger_errors = true, $requestSignatureVersion = self::REQUEST_SIGNATURE_V4) {
+		if ($accessKey !== null && $secretKey !== null) {
+			$this->setAuth($accessKey, $secretKey);
+		}
+		$this->__host = $host;
+		$this->__trigger_errors = $trigger_errors;
+		$this->__requestSignatureVersion = $requestSignatureVersion;
+	}
+
+    /**
+     * Set the request signature version
+     *
+     * @param string $requestSignatureVersion Value is ignored and V4 is used. This for BW compatibility.
+     * @return SimpleEmailService $this
+     * 
+     * @deprecated Currently only V4 supported.
+     */
+	public function setRequestSignatureVersion($requestSignatureVersion) {
+	    $this->__requestSignatureVersion = self::REQUEST_SIGNATURE_V4;
+
+	    return $this;
+    }
+
+    /**
+     * @return string
+     * 
+     * @deprecated Not relevant when only V4 is supported.
+     */
+    public function getRequestSignatureVersion() {
+	    return $this->__requestSignatureVersion;
+    }
+
+	/**
+	* Set AWS access key and secret key
+	*
+	* @param string $accessKey Access key
+	* @param string $secretKey Secret key
+	* @return SimpleEmailService $this
+	*/
+	public function setAuth($accessKey, $secretKey) {
+		$this->__accessKey = $accessKey;
+		$this->__secretKey = $secretKey;
+
+		return $this;
+	}
+
+	/**
+	 * Set AWS Host
+	 * @param string $host AWS Host
+	 */
+	public function setHost($host = self::AWS_US_EAST_1) {
+		$this->__host = $host;
+
+		return $this;
+	}
+
+	/**
+	 * @deprecated
+	 */
+	public function enableVerifyHost($enable = true) {
+		$this->__verifyHost = (bool)$enable;
+
+		return $this;
+	}
+
+	/**
+	 * @deprecated
+	 */
+	public function enableVerifyPeer($enable = true) {
+		$this->__verifyPeer = (bool)$enable;
+
+		return $this;
+	}
+
+	/**
+	 * @deprecated
+	 */
+	public function verifyHost() {
+		return $this->__verifyHost;
+	}
+
+	/**
+	 * @deprecated
+	 */
+	public function verifyPeer() {
+		return $this->__verifyPeer;
+	}
+
+
+	/**
+	* Get AWS target host
+	* @return boolean
+	*/
+	public function getHost() {
+		return $this->__host;
+	}
+
+	/**
+	* Get AWS SES auth access key
+	* @return string
+	*/
+	public function getAccessKey() {
+		return $this->__accessKey;
+	}
+
+	/**
+	* Get AWS SES auth secret key
+	* @return string
+	*/
+	public function getSecretKey() {
+		return $this->__secretKey;
+	}
+
+	/**
+	* Get the verify peer CURL mode
+	* @return boolean
+	*/
+	public function getVerifyPeer() {
+		return $this->__verifyPeer;
+	}
+
+	/**
+	* Get the verify host CURL mode
+	* @return boolean
+	*/
+	public function getVerifyHost() {
+		return $this->__verifyHost;
+	}
+
+	/**
+	* Get bulk email sending mode
+	* @deprecated
+	* @return boolean
+	*/
+	public function getBulkMode() {
+		return $this->__bulk_sending_mode;
+	}
+
+
+	/**
+	* Enable/disable CURLOPT_SSL_VERIFYHOST for SimpleEmailServiceRequest's curl handler
+	* verifyHost and verifyPeer determine whether curl verifies ssl certificates.
+	* It may be necessary to disable these checks on certain systems.
+	* These only have an effect if SSL is enabled.
+	*
+	* @param boolean $enable New status for the mode
+	* @return SimpleEmailService $this
+	*/
+	public function setVerifyHost($enable = true) {
+		$this->__verifyHost = (bool)$enable;
+		return $this;
+	}
+
+	/**
+	* Enable/disable CURLOPT_SSL_VERIFYPEER for SimpleEmailServiceRequest's curl handler
+	* verifyHost and verifyPeer determine whether curl verifies ssl certificates.
+	* It may be necessary to disable these checks on certain systems.
+	* These only have an effect if SSL is enabled.
+	*
+	* @param boolean $enable New status for the mode
+	* @return SimpleEmailService $this
+	*/
+	public function setVerifyPeer($enable = true) {
+		$this->__verifyPeer = (bool)$enable;
+		return $this;
+	}
+
+	/**
+	* Enable/disable bulk email sending mode
+	*
+	* @param boolean $enable New status for the mode
+	* @return SimpleEmailService $this
+	* @deprecated
+	*/
+	public function setBulkMode($enable = true) {
+		$this->__bulk_sending_mode = (bool)$enable;
+		return $this;
+	}
+
+	/**
+	* Lists the email addresses that have been verified and can be used as the 'From' address
+	*
+	* @return array An array containing two items: a list of verified email addresses, and the request id.
+	*/
+	public function listVerifiedEmailAddresses() {
+		$addresses = array();
+		$next_token = null;
+
+		do {
+			$ses_request = $this->getRequestHandler('GET');
+			$ses_request->setPath('/v2/email/identities');
+			$ses_request->setParameter('PageSize', '1000');
+			if(!is_null($next_token) && strlen($next_token) > 0) {
+				$ses_request->setParameter('NextToken', $next_token);
+			}
+
+			$ses_response = $ses_request->getResponse();
+			if($ses_response->error === false && $ses_response->code !== 200) {
+				$ses_response->error = array('code' => $ses_response->code, 'message' => 'Unexpected HTTP status');
+			}
+			if($ses_response->error !== false) {
+				$this->__triggerError('listVerifiedEmailAddresses', $ses_response->error);
+				return false;
+			}
+
+			if(isset($ses_response->body->EmailIdentities) && is_array($ses_response->body->EmailIdentities)) {
+				foreach($ses_response->body->EmailIdentities as $identity) {
+					if(isset($identity->IdentityType, $identity->VerificationStatus, $identity->IdentityName)
+						&& (string)$identity->IdentityType === 'EMAIL_ADDRESS'
+						&& (string)$identity->VerificationStatus === 'SUCCESS') {
+						$addresses[] = (string)$identity->IdentityName;
+					}
+				}
+			}
+
+			$next_token = isset($ses_response->body->NextToken) ? (string)$ses_response->body->NextToken : null;
+		} while(!is_null($next_token) && strlen($next_token) > 0);
+
+		$response = array();
+		$response['Addresses'] = $addresses;
+		$response['RequestId'] = '';
+
+		return $response;
+	}
+
+	/**
+	* Requests verification of the provided email address, so it can be used
+	* as the 'From' address when sending emails through SimpleEmailService.
+	*
+	* After submitting this request, you should receive a verification email
+	* from Amazon at the specified address containing instructions to follow.
+	*
+	* @param string $email The email address to get verified
+	* @return array The request id for this request.
+	*/
+	public function verifyEmailAddress($email) {
+		$ses_request = $this->getRequestHandler('POST');
+		$ses_request->setPath('/v2/email/identities');
+		$ses_request->setJsonPayload(array('EmailIdentity' => $email));
+
+		$ses_response = $ses_request->getResponse();
+		if($ses_response->error === false && $ses_response->code !== 200) {
+			$ses_response->error = array('code' => $ses_response->code, 'message' => 'Unexpected HTTP status');
+		}
+		if($ses_response->error !== false) {
+			$this->__triggerError('verifyEmailAddress', $ses_response->error);
+			return false;
+		}
+
+		$response['RequestId'] = '';
+		return $response;
+	}
+
+	/**
+	* Removes the specified email address from the list of verified addresses.
+	*
+	* @param string $email The email address to remove
+	* @return array The request id for this request.
+	*/
+	public function deleteVerifiedEmailAddress($email) {
+		$ses_request = $this->getRequestHandler('DELETE');
+		$ses_request->setPath('/v2/email/identities/' . rawurlencode($email));
+
+		$ses_response = $ses_request->getResponse();
+		if($ses_response->error === false && $ses_response->code !== 200) {
+			$ses_response->error = array('code' => $ses_response->code, 'message' => 'Unexpected HTTP status');
+		}
+		if($ses_response->error !== false) {
+			$this->__triggerError('deleteVerifiedEmailAddress', $ses_response->error);
+			return false;
+		}
+
+		$response['RequestId'] = '';
+		return $response;
+	}
+
+	/**
+	* Retrieves information on the current activity limits for this account.
+	* See https://docs.aws.amazon.com/ses/latest/APIReference-V2/API_GetAccount.html
+	*
+	* @return array An array containing information on this account's activity limits.
+	*/
+	public function getSendQuota() {
+		$ses_request = $this->getRequestHandler('GET');
+		$ses_request->setPath('/v2/email/account');
+
+		$ses_response = $ses_request->getResponse();
+		if($ses_response->error === false && $ses_response->code !== 200) {
+			$ses_response->error = array('code' => $ses_response->code, 'message' => 'Unexpected HTTP status');
+		}
+		if($ses_response->error !== false) {
+			$this->__triggerError('getSendQuota', $ses_response->error);
+			return false;
+		}
+
+		$response = array();
+		if(!isset($ses_response->body->SendQuota)) {
+			return $response;
+		}
+
+		$response['Max24HourSend'] = isset($ses_response->body->SendQuota->Max24HourSend) ? (string)$ses_response->body->SendQuota->Max24HourSend : '';
+		$response['MaxSendRate'] = isset($ses_response->body->SendQuota->MaxSendRate) ? (string)$ses_response->body->SendQuota->MaxSendRate : '';
+		$response['SentLast24Hours'] = isset($ses_response->body->SendQuota->SentLast24Hours) ? (string)$ses_response->body->SendQuota->SentLast24Hours : '';
+		$response['RequestId'] = '';
+
+		return $response;
+	}
+
+	/**
+	* Retrieves statistics for the last two weeks of activity on this account.
+	* SES API v2 does not provide a direct replacement for the SES v1 GetSendStatistics API.
+	*
+	* @return false
+	*/
+	public function getSendStatistics() {
+		$this->__triggerError('getSendStatistics', 'GetSendStatistics is not available in SES API v2.');
+		return false;
+	}
+
+
+	/**
+	* Given a SimpleEmailServiceMessage object, submits the message to the service for sending.
+	*
+	* @param SimpleEmailServiceMessage $sesMessage An instance of the message class
+	* @param boolean $use_raw_request Kept for backward compatibility. SES API v2 sends using Content.Raw.Data.
+	* @param boolean $trigger_error Optionally overwrite the class setting for triggering an error (with type check to true/false)
+	* @return array An array containing the unique identifier for this message and a separate request id.
+	*         Returns false if the provided message is missing any required fields.
+	*/
+	public function sendEmail($sesMessage, $use_raw_request = false , $trigger_error = null) {
+		if(!$sesMessage->validate()) {
+			$this->__triggerError('sendEmail', 'Message failed validation.');
+			return false;
+		}
+
+		$payload = array(
+			'Content' => array(
+				'Raw' => array(
+					'Data' => $sesMessage->getRawMessage(),
+				),
+			),
+		);
+
+		if (!is_null($sesMessage->configuration_set)) {
+			$payload['ConfigurationSetName'] = $sesMessage->configuration_set;
+		}
+
+		if(!empty($sesMessage->message_tags)) {
+			$payload['EmailTags'] = array();
+			foreach($sesMessage->message_tags as $key => $value) {
+				$payload['EmailTags'][] = array(
+					'Name' => (string)$key,
+					'Value' => (string)$value,
+				);
+			}
+		}
+
+		$ses_request = $this->getRequestHandler('POST');
+		$ses_request->setPath('/v2/email/outbound-emails');
+		$ses_request->setJsonPayload($payload);
+
+		$ses_response = $ses_request->getResponse();
+		if($ses_response->error === false && $ses_response->code !== 200) {
+			$response = array(
+				'code' => $ses_response->code,
+				'error' => array('Error' => array('message' => 'Unexpected HTTP status')),
+			);
+			return $response;
+		}
+		if($ses_response->error !== false) {
+			if (($this->__trigger_errors && ($trigger_error !== false)) || $trigger_error === true) {
+				$this->__triggerError('sendEmail', $ses_response->error);
+				return false;
+			}
+			return $ses_response;
+		}
+
+		$response = array(
+			'MessageId' => isset($ses_response->body->MessageId) ? (string)$ses_response->body->MessageId : '',
+			'RequestId' => '',
+		);
+		return $response;
+	}
+
+
+	/**
+	* Trigger an error message
+	*
+	* {@internal Used by member functions to output errors}
+	* @param  string $functionname The name of the function that failed
+	* @param array $error Array containing error information
+	* @return  void
+	*/
+	public function __triggerError($functionname, $error)
+	{
+		if($error == false) {
+			trigger_error(sprintf("SimpleEmailService::%s(): Encountered an error, but no description given", $functionname), E_USER_WARNING);
+		}
+		else if(isset($error['curl']) && $error['curl'])
+		{
+			trigger_error(sprintf("SimpleEmailService::%s(): %s %s", $functionname, $error['code'], $error['message']), E_USER_WARNING);
+		}
+		else if(isset($error['Error']))
+		{
+			$e = $error['Error'];
+			$message = sprintf("SimpleEmailService::%s(): %s - %s: %s\nRequest Id: %s\n", $functionname, $e['Type'], $e['Code'], $e['Message'], $error['RequestId']);
+			trigger_error($message, E_USER_WARNING);
+		}
+		else {
+			trigger_error(sprintf("SimpleEmailService::%s(): Encountered an error: %s", $functionname, $error), E_USER_WARNING);
+		}
+	}
+
+	/**
+	 * Set SES Request
+	 *
+	 * @param SimpleEmailServiceRequest $ses_request description
+	 * @return SimpleEmailService $this
+	 */
+	public function setRequestHandler(SimpleEmailServiceRequest $ses_request = null) {
+		if (!is_null($ses_request)) {
+			$ses_request->setSES($this);
+		}
+
+		$this->__ses_request = $ses_request;
+
+		return $this;
+	}
+
+	/**
+	 * Get SES Request
+	 *
+	 * @param string $verb HTTP Verb: GET, POST, DELETE
+	 * @return SimpleEmailServiceRequest SES Request
+	 */
+	public function getRequestHandler($verb) {
+		if (empty($this->__ses_request)) {
+			$this->__ses_request = new SimpleEmailServiceRequest($this, $verb);
+		} else {
+			$this->__ses_request->setVerb($verb);
+		}
+
+		return $this->__ses_request;
+	}
+}

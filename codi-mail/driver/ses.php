@@ -1,5 +1,12 @@
 <?php
 
+//constants
+define('CODI_MAIL_SES_VERSION', 2);
+
+function codi_mail_ses_version() {
+	return (defined('CODI_MAIL_SES_VERSION') && CODI_MAIL_SES_VERSION == 2) ? 2 : 1;
+}
+
 //override send mail
 add_filter('pre_wp_mail', function($return, $atts) {
 	//already done?
@@ -8,9 +15,12 @@ add_filter('pre_wp_mail', function($return, $atts) {
 	}
 	//load classes?
 	if(!class_exists('SimpleEmailService')) {
-		include_once(__DIR__ . '/ses/SimpleEmailService.php');
-		include_once(__DIR__ . '/ses/SimpleEmailServiceMessage.php');
-		include_once(__DIR__ . '/ses/SimpleEmailServiceRequest.php');
+		//get version
+		$version = 'v' . codi_mail_ses_version();
+		//load files
+		include_once(__DIR__ . '/ses/' . $version . '/SimpleEmailService.php');
+		include_once(__DIR__ . '/ses/' . $version . '/SimpleEmailServiceMessage.php');
+		include_once(__DIR__ . '/ses/' . $version . '/SimpleEmailServiceRequest.php');
 	}
 	//extract
 	extract($atts);
@@ -119,6 +129,7 @@ add_filter('codi_mail_admin_fields', function($html, $opts) {
 	$html  = '';
 	//add SES fields
 	$html .= '<tr><td>About</td><td style="font-size:0.9em; font-style:italic;">This uses the Amazon API to send emails, in cases where SMTP ports are blocked by your server: <a href="https://blog.mailtrap.io/amazon-ses-explained/#Step-by-Step_setup" target="_blank">Amazon SES setup guide</a></td></tr>' . "\n";
+	$html .= '<tr><td>API Version</td><td>v' . codi_mail_ses_version() . '</td></tr>' . "\n";
 	$html .= '<tr><td>Region</td><td><input type="text" name="mail_opts[host]" size="50" value="' . esc_attr($opts['host']) . '"></td></tr>' . "\n";
 	$html .= '<tr><td>Access key ID</td><td><input type="text" name="mail_opts[username]" size="50" value="' . esc_attr($opts['username']) . '"></td></tr>' . "\n";
 	$html .= '<tr><td>Secret access key</td><td><input type="password" name="mail_opts[password]" size="50" value="' . esc_attr($opts['password']) . '"></td></tr>' . "\n";
