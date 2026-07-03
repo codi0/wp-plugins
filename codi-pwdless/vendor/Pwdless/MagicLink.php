@@ -75,7 +75,8 @@ class MagicLink {
 			$email = $this->validate_token($token);
 
 			if (!$email) {
-				echo 'Invalid or expired magic login link. <a href="' . esc_attr($this->orchestrator->get_base_url()) . '">Request a new link</a>.';
+				echo '<h3>Invalid or expired magic login link</h3>';
+				echo '<p><form action="' . esc_attr($this->orchestrator->get_base_url()) . '"><button type="submit" style="padding:6px 12px; cursor:pointer;">Click here to request a new link</button></form></p>';
 				exit();
 			}
 			
