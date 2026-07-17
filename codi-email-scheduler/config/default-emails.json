@@ -1,0 +1,112 @@
+{
+  "format": "codi-email-scheduler",
+  "version": 1,
+  "emails": [
+    {
+      "key": "default-complete-profile",
+      "name": "Complete your profile",
+      "enabled": false,
+      "event": {
+        "key": "wp_user_available_on_site",
+        "settings": {}
+      },
+      "condition_mode": "all",
+      "conditions": [
+        {
+          "key": "wp_user_has_email",
+          "operator": "is_true",
+          "settings": {}
+        },
+        {
+          "key": "wp_user_meta_matches",
+          "operator": "is_true",
+          "settings": {
+            "meta_key": "first_name",
+            "comparison": "falsy",
+            "value": ""
+          }
+        }
+      ],
+      "delays": [
+        { "value": 24, "unit": "hours" },
+        { "value": 4, "unit": "days" }
+      ],
+      "subject": "Complete your profile",
+      "body": "<p>Hi,</p>\n<p>Your account has been created, but your profile is not complete yet.</p>\n<p>Please add your profile details so we can show the right options for your account.</p>\n<p>You can complete your profile here: <a href=\"{{site_url}}\">{{site_url}}</a></p>\n<p>Thanks,<br>{{site_name}}</p>"
+    },
+    {
+      "key": "default-profile-complete-no-purchase",
+      "name": "Make your first purchase",
+      "enabled": false,
+      "event": {
+        "key": "wp_user_meta_changed",
+        "settings": {
+          "meta_key": "first_name",
+          "trigger": "becomes_truthy",
+          "value": ""
+        }
+      },
+      "condition_mode": "all",
+      "conditions": [
+        {
+          "key": "wp_user_has_email",
+          "operator": "is_true",
+          "settings": {}
+        },
+        {
+          "key": "wp_user_meta_matches",
+          "operator": "is_true",
+          "settings": {
+            "meta_key": "first_name",
+            "comparison": "truthy",
+            "value": ""
+          }
+        },
+        {
+          "key": "wc_customer_has_paid_order",
+          "operator": "is_false",
+          "settings": {}
+        }
+      ],
+      "delays": [
+        { "value": 24, "unit": "hours" },
+        { "value": 4, "unit": "days" }
+      ],
+      "subject": "Your profile is ready",
+      "body": "<p>Hi {{first_name}},</p>\n<p>Your profile is complete, and your membership options are ready to review.</p>\n<p>You can continue from your account area here: <a href=\"{{site_url}}\">{{site_url}}</a></p>\n<p>Thanks,<br>{{site_name}}</p>"
+    },
+    {
+      "key": "default-abandoned-basket-24h",
+      "name": "Abandoned basket reminder",
+      "enabled": false,
+      "event": {
+        "key": "wc_cart_item_added",
+        "settings": {}
+      },
+      "condition_mode": "all",
+      "conditions": [
+        {
+          "key": "wp_user_has_email",
+          "operator": "is_true",
+          "settings": {}
+        },
+        {
+          "key": "wc_cart_still_contains_added_item",
+          "operator": "is_true",
+          "settings": {}
+        },
+        {
+          "key": "wc_customer_has_ordered_added_item_since_event",
+          "operator": "is_false",
+          "settings": {}
+        }
+      ],
+      "delays": [
+        { "value": 24, "unit": "hours" },
+        { "value": 4, "unit": "days" }
+      ],
+      "subject": "You still have {{product_name_trimmed}} in your basket",
+      "body": "<p>Hi {{first_name}},</p>\n<p>You still have {{product_name_trimmed}} in your basket.</p>\n<p>Your basket has been saved so you can return to it when you are ready.</p>\n<p>You can complete checkout here: <a href=\"{{checkout_url}}\">{{checkout_url}}</a></p>\n<p>Thanks,<br>{{site_name}}</p>"
+    }
+  ]
+}
