@@ -284,6 +284,9 @@ add_shortcode('codi_pwdless_login', function(array $atts = []) use ($login) {
             opacity: 0.5 !important;
             cursor: not-allowed;
         }
+        .codi-pwdless [type="email"] {
+					border-color: #aaa;
+        }
         .codi-pwdless .notice {
             padding-left: 12px;
             border-left: 4px solid transparent;
