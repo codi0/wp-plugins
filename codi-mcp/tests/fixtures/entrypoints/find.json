@@ -1,0 +1,16 @@
+{
+  "tool": "find",
+  "input": {
+    "site_id": 1,
+    "mode": "object",
+    "query": "Home",
+    "types": ["page"],
+    "limit": 1
+  },
+  "stable_fields": [
+    "ok",
+    "data.status",
+    "data.selection_id",
+    "data.results"
+  ]
+}

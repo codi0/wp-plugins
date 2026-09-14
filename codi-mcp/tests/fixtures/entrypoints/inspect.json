@@ -1,0 +1,14 @@
+{
+  "tool": "inspect",
+  "input": {
+    "site_id": 1,
+    "selection_id": "<selection_id>",
+    "intent": "copy_edit"
+  },
+  "stable_fields": [
+    "ok",
+    "data.status",
+    "data.strategy",
+    "data.guidance.next_call_templates"
+  ]
+}

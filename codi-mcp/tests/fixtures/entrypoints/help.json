@@ -1,0 +1,14 @@
+{
+  "tool": "help",
+  "input": {
+    "summary_only": true,
+    "include_examples": false
+  },
+  "stable_fields": [
+    "ok",
+    "data.status",
+    "data.tools",
+    "data.first_calls",
+    "data.notes"
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "tool": "sites",
+  "input": {},
+  "stable_fields": [
+    "ok",
+    "data.status",
+    "data.kind",
+    "data.sites"
+  ]
+}
