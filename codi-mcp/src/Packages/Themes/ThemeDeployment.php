@@ -100,7 +100,15 @@ final class ThemeDeployment
         $existed = isset($installedBefore[$stylesheet]);
         $skin = new \Automatic_Upgrader_Skin();
         $upgrader = new \Theme_Upgrader($skin);
-        $result = $upgrader->install($zipPath, array('overwrite_package' => true));
+        $bufferLevel = ob_get_level();
+        ob_start();
+        try {
+            $result = $upgrader->install($zipPath, array('overwrite_package' => true));
+        } finally {
+            while (ob_get_level() > $bufferLevel) {
+                ob_end_clean();
+            }
+        }
         $upgraderError = UpgraderResult::error($result, 'theme');
         if ($upgraderError instanceof \WP_Error) {
             return $upgraderError;

@@ -113,7 +113,20 @@ final class FederationController
         $input = array_key_exists('arguments', $payload) ? $payload['arguments'] : null;
         $result = $this->local->execute($abilityName, $input);
         if (is_wp_error($result)) {
-            return $result;
+            $data = $result->get_error_data();
+            $status = is_array($data) ? (int) ($data['status'] ?? 500) : 500;
+            if ($status < 400 || $status > 599) {
+                $status = 500;
+            }
+            return array(
+                'site_id' => $this->sites->currentSiteId(),
+                'ability' => $abilityName,
+                'error' => array(
+                    'code' => (string) $result->get_error_code(),
+                    'message' => (string) $result->get_error_message(),
+                    'status' => $status,
+                ),
+            );
         }
 
         return array(

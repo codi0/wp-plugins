@@ -158,6 +158,30 @@ final class SecurityAuditTest extends TestCase
         $this->assertFalse($executed, 'Ability callback must not run when its required audit start cannot be persisted.');
     }
 
+    public function test_audited_ability_does_not_depend_on_the_legacy_shared_audit_mutex(): void
+    {
+        $plugin = new Plugin(array());
+        $plugin->register();
+        wp_set_current_user(9);
+        wp_register_ability('codi/test-audit-no-shared-mutex', array(
+            'label' => 'Audit no shared mutex',
+            'description' => 'Audit writes must not serialize behind the legacy shared audit mutex option.',
+            'input_schema' => array('type' => 'object'),
+            'execute_callback' => static fn (array $input): array => array('ok' => true),
+            'permission_callback' => static fn (): bool => true,
+            'meta' => AbilityMetadata::owned('test', false, false, false),
+        ));
+
+        $mutexName = 'codi_mcp_mutex_' . substr(hash('sha256', 'audit-log'), 0, 32);
+        add_option($mutexName, array('token' => 'held-by-other-request', 'expires_at' => time() + 120), '', false);
+
+        $result = wp_get_abilities()['codi/test-audit-no-shared-mutex']->execute(array());
+        $this->assertSame(array('ok' => true), $result);
+        $records = (new AuditLog())->list(10);
+        $this->assertSame('codi/test-audit-no-shared-mutex', (string) ($records[0]['subject'] ?? ''));
+        $this->assertSame('succeeded', (string) ($records[0]['status'] ?? ''));
+    }
+
     public function test_plugin_does_not_disable_the_adapter_default_server_globally(): void
     {
         $plugin = new Plugin(array());

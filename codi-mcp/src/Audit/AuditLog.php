@@ -4,17 +4,12 @@ declare(strict_types=1);
 
 namespace CodiMcp\Audit;
 
-use CodiMcp\Core\Storage\OptionMutex;
-
 final class AuditLog
 {
     private const OPTION = 'codi_mcp_audit_log_v1';
     private const MAX_RECORDS = 250;
-
-    public function __construct(private ?OptionMutex $mutex = null)
-    {
-        $this->mutex ??= new OptionMutex();
-    }
+    private const WRITE_ATTEMPTS = 100;
+    private const RETRY_DELAY_MICROSECONDS = 1000;
 
     public function beginAbility(string $abilityName, $input, string $source): string
     {
@@ -46,8 +41,7 @@ final class AuditLog
         $reasonCode = preg_replace('/[^A-Za-z0-9_.:-]/', '', trim($reasonCode)) ?? '';
         $reasonCode = substr($reasonCode, 0, 100);
 
-        $this->mutex->synchronized('audit-log', function () use ($eventId, $status, $reasonCode): void {
-            $records = $this->records();
+        $this->mutate(function (array $records) use ($eventId, $status, $reasonCode): array {
             foreach ($records as &$record) {
                 if ((string) ($record['event_id'] ?? '') !== $eventId) {
                     continue;
@@ -55,8 +49,7 @@ final class AuditLog
                 $record['status'] = $status;
                 $record['reason_code'] = $reasonCode;
                 $record['completed_at'] = gmdate('c');
-                $this->write($records);
-                return;
+                return $records;
             }
             throw new \RuntimeException('Codi MCP audit event was not found.');
         });
@@ -111,11 +104,97 @@ final class AuditLog
     /** @param array<string,mixed> $record */
     private function append(array $record): void
     {
-        $this->mutex->synchronized('audit-log', function () use ($record): void {
-            $records = $this->records();
+        $this->mutate(function (array $records) use ($record): array {
             array_unshift($records, $record);
-            $this->write(array_slice($records, 0, self::MAX_RECORDS));
+            return array_slice($records, 0, self::MAX_RECORDS);
         });
+    }
+
+    /**
+     * Mutate the bounded audit option without a separate option-based mutex.
+     *
+     * Real WordPress requests use an optimistic compare-and-swap against the
+     * option row so concurrent MCP abilities can append/complete audit records
+     * without serializing behind a second shared lock option. Lightweight test
+     * environments without wpdb fall back to the normal option API.
+     *
+     * @param callable(array<int,array<string,mixed>>):array<int,array<string,mixed>> $mutator
+     */
+    private function mutate(callable $mutator): void
+    {
+        global $wpdb;
+
+        if (is_object($wpdb)
+            && isset($wpdb->options)
+            && method_exists($wpdb, 'prepare')
+            && method_exists($wpdb, 'get_var')
+            && method_exists($wpdb, 'query')
+            && function_exists('add_option')
+            && function_exists('maybe_serialize')
+            && function_exists('maybe_unserialize')) {
+            $this->mutateAtomic($wpdb, $mutator);
+            return;
+        }
+
+        $this->write($mutator($this->records()));
+    }
+
+    /**
+     * @param object $wpdb
+     * @param callable(array<int,array<string,mixed>>):array<int,array<string,mixed>> $mutator
+     */
+    private function mutateAtomic(object $wpdb, callable $mutator): void
+    {
+        for ($attempt = 0; $attempt < self::WRITE_ATTEMPTS; $attempt++) {
+            $raw = $wpdb->get_var($wpdb->prepare(
+                "SELECT option_value FROM {$wpdb->options} WHERE option_name = %s LIMIT 1",
+                self::OPTION
+            ));
+
+            if ($raw === null) {
+                $next = $mutator(array());
+                if (add_option(self::OPTION, $next, '', false)) {
+                    return;
+                }
+                $this->clearOptionCache();
+                usleep(self::RETRY_DELAY_MICROSECONDS);
+                continue;
+            }
+
+            $decoded = maybe_unserialize($raw);
+            $records = is_array($decoded) ? array_values(array_filter($decoded, 'is_array')) : array();
+            $next = $mutator($records);
+            $nextRaw = maybe_serialize($next);
+            if ($nextRaw === (string) $raw) {
+                return;
+            }
+
+            $updated = $wpdb->query($wpdb->prepare(
+                "UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND BINARY option_value = BINARY %s",
+                $nextRaw,
+                self::OPTION,
+                (string) $raw
+            ));
+            if ($updated === 1) {
+                $this->clearOptionCache();
+                return;
+            }
+            if ($updated === false) {
+                throw new \RuntimeException('Could not persist the Codi MCP audit log.');
+            }
+
+            $this->clearOptionCache();
+            usleep(self::RETRY_DELAY_MICROSECONDS);
+        }
+
+        throw new \RuntimeException('Codi MCP audit storage remained busy after repeated concurrent writes.');
+    }
+
+    private function clearOptionCache(): void
+    {
+        if (function_exists('wp_cache_delete')) {
+            wp_cache_delete(self::OPTION, 'options');
+        }
     }
 
     /** @return array<int,array<string,mixed>> */

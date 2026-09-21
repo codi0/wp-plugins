@@ -96,13 +96,15 @@ final class CoreUploadCapabilityServiceTest extends TestCase
         $this->assertSame(0, count((array) ($GLOBALS['codi_mcp_test_cron_events'] ?? array())));
     }
 
-    public function test_upgrader_false_result_maps_to_explicit_filesystem_error(): void
+    public function test_upgrader_non_success_result_maps_to_explicit_filesystem_error(): void
     {
         foreach (array('plugin' => 'plugins', 'theme' => 'themes') as $artifact => $label) {
-            $error = UpgraderResult::error(false, $artifact);
-            $this->assertTrue($error instanceof \WP_Error);
-            $this->assertSame('fs_unavailable', (string) ($error->code ?? ''));
-            $this->assertTrue(str_contains((string) ($error->message ?? ''), 'managing ' . $label));
+            foreach (array(false, null) as $result) {
+                $error = UpgraderResult::error($result, $artifact);
+                $this->assertTrue($error instanceof \WP_Error);
+                $this->assertSame('fs_unavailable', (string) ($error->code ?? ''));
+                $this->assertTrue(str_contains((string) ($error->message ?? ''), 'managing ' . $label));
+            }
         }
 
         $original = new \WP_Error('fixture_failure', 'Fixture failure.');

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Codi MCP
  * Description: OAuth, MCP governance, and packaged WordPress abilities for the official MCP Adapter.
- * Version: 0.6.0
+ * Version: 0.6.3
  * Requires at least: 6.9
  * Requires PHP: 8.1
  * Requires Plugins: mcp-adapter
@@ -13,7 +13,7 @@ if (!defined('ABSPATH')) {
 }
 
 if (!defined('CODI_MCP_VERSION')) {
-    define('CODI_MCP_VERSION', '0.6.0');
+    define('CODI_MCP_VERSION', '0.6.3');
 }
 if (!defined('CODI_MCP_ABILITY_PREFIX')) {
     define('CODI_MCP_ABILITY_PREFIX', 'codi');

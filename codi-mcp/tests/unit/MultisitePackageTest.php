@@ -53,6 +53,21 @@ final class MultisitePackageTest extends TestCase
             array('codi/sites', 'codi/site-abilities', 'codi/site-call'),
             array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities'])
         );
+        $sitesDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/sites'] ?? array());
+        $abilitiesDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/site-abilities'] ?? array());
+        $callDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/site-call'] ?? array());
+        $this->assertTrue(str_contains((string) ($sitesDescriptor['description'] ?? ''), 'Never guess or implicitly default a site_id'));
+        $this->assertTrue(str_contains((string) ($abilitiesDescriptor['description'] ?? ''), 'Reuse previously returned descriptors'));
+        $this->assertTrue(str_contains((string) ($abilitiesDescriptor['description'] ?? ''), 'Pass search'));
+        $this->assertTrue(str_contains((string) ($abilitiesDescriptor['description'] ?? ''), 'terms do not need to be adjacent'));
+        $this->assertTrue(str_contains((string) ($callDescriptor['description'] ?? ''), 'do not call site-abilities first'));
+        $this->assertArrayHasKey('search', (array) ($abilitiesDescriptor['input_schema']['properties'] ?? array()));
+        $siteOutputProperties = (array) ($sitesDescriptor['output_schema']['properties'] ?? array());
+        $this->assertSame(array('items'), array_keys($siteOutputProperties));
+        $abilityProperties = (array) ($abilitiesDescriptor['output_schema']['properties']['abilities']['items']['properties'] ?? array());
+        $this->assertSame(array('name', 'description', 'input_schema', 'annotations'), array_keys($abilityProperties));
+        $this->assertSame(array('abilities'), array_keys((array) ($abilitiesDescriptor['output_schema']['properties'] ?? array())));
+        $this->assertSame(array('result'), array_keys((array) ($callDescriptor['output_schema']['properties'] ?? array())));
         $this->assertArrayHasKey('codi-mcp/v1/federation', (array) $GLOBALS['codi_mcp_test_rest_routes']);
 
         \codi_mcp_test_reset_environment();
@@ -107,7 +122,6 @@ final class MultisitePackageTest extends TestCase
         $this->assertTrue((bool) $permission());
 
         $result = $callback(array());
-        $this->assertSame(2, (int) ($result['total'] ?? 0));
         $this->assertSame(array(1, 2), array_map(static fn (array $site): int => (int) $site['site_id'], (array) ($result['items'] ?? array())));
         $this->assertSame('Primary Site', (string) ($result['items'][0]['name'] ?? ''));
         $this->assertSame('Docs Site', (string) ($result['items'][1]['name'] ?? ''));
@@ -120,6 +134,48 @@ final class MultisitePackageTest extends TestCase
 
         $this->assertSame(array(1), array_map(static fn (array $site): int => (int) $site['site_id'], $sites));
         $this->assertFalse((new SiteDirectory())->canAccessSite(7, 2));
+    }
+
+    public function test_site_abilities_search_filters_model_facing_catalogue(): void
+    {
+        wp_register_ability('example/widget-inspect', array(
+            'label' => 'Widget inspect',
+            'description' => 'Inspect widget configuration.',
+            'category' => 'example',
+            'input_schema' => array('type' => 'object', 'additionalProperties' => false, 'properties' => array()),
+            'execute_callback' => static fn (array $input): array => array(),
+            'permission_callback' => static fn (array $input): bool => current_user_can('read'),
+            'meta' => array('public' => true),
+        ));
+        wp_register_ability('example/report-inspect', array(
+            'label' => 'Report inspect',
+            'description' => 'Inspect report configuration.',
+            'category' => 'example',
+            'input_schema' => array('type' => 'object', 'additionalProperties' => false, 'properties' => array()),
+            'execute_callback' => static fn (array $input): array => array(),
+            'permission_callback' => static fn (array $input): bool => current_user_can('read'),
+            'meta' => array('public' => true),
+        ));
+
+        $policy = $this->policy();
+        $policy->saveSelection(array('example/widget-inspect', 'example/report-inspect'));
+        $package = new Package();
+        $package->registerRuntime($this->runtime($policy));
+        $package->registerAbilities();
+
+        $descriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/site-abilities'] ?? array());
+        $callback = $descriptor['execute_callback'] ?? null;
+        $permission = $descriptor['permission_callback'] ?? null;
+        $input = array('site_id' => 1, 'search' => 'widget configuration');
+
+        $this->assertTrue(is_callable($callback));
+        $this->assertTrue(is_callable($permission));
+        $this->assertTrue((bool) $permission($input));
+        $result = $callback($input);
+        $this->assertSame(
+            array('example/widget-inspect'),
+            array_map(static fn (array $ability): string => (string) ($ability['name'] ?? ''), (array) ($result['abilities'] ?? array()))
+        );
     }
 
     public function test_local_catalog_and_execution_use_live_target_exposure_and_normal_ability_permissions(): void
@@ -149,6 +205,7 @@ final class MultisitePackageTest extends TestCase
 
         $catalog = $local->catalog();
         $this->assertCount(1, $catalog);
+        $this->assertSame(array('name', 'description', 'input_schema', 'annotations'), array_keys($catalog[0]));
         $this->assertSame('example/echo', (string) ($catalog[0]['name'] ?? ''));
         $this->assertSame('object', (string) ($catalog[0]['input_schema']['type'] ?? ''));
         $this->assertTrue((bool) ($catalog[0]['annotations']['readonly'] ?? false));
@@ -181,7 +238,7 @@ final class MultisitePackageTest extends TestCase
         $catalog = $local->catalog();
         $this->assertCount(1, $catalog);
         $this->assertSame('object', (string) ($catalog[0]['input_schema']['type'] ?? ''));
-        $this->assertSame(null, $catalog[0]['output_schema'] ?? null);
+        $this->assertFalse(array_key_exists('output_schema', $catalog[0]));
         $this->assertSame(array('count' => 0), $local->execute('example/no-input'));
     }
 
@@ -204,6 +261,34 @@ final class MultisitePackageTest extends TestCase
         $this->assertSame($url, (string) ($calls[0]['url'] ?? ''));
         $this->assertSame(0, (int) ($calls[0]['args']['redirection'] ?? -1));
         $this->assertTrue(trim((string) ($calls[0]['args']['headers']['X-Codi-MCP-Federation'] ?? '')) !== '');
+    }
+
+    public function test_remote_client_reconstructs_federated_ability_error_envelope(): void
+    {
+        $url = 'https://docs.example.test/wp-json/codi-mcp/v1/federation';
+        $GLOBALS['codi_mcp_test_wp_remote_post_responses'][$url] = array(
+            'response' => array('code' => 200),
+            'body' => json_encode(array(
+                'site_id' => 2,
+                'ability' => 'example/target',
+                'error' => array(
+                    'code' => 'fixture_failure',
+                    'message' => 'Fixture failure.',
+                    'status' => 409,
+                ),
+            ), JSON_UNESCAPED_SLASHES),
+        );
+
+        $sites = new SiteDirectory();
+        $local = new LocalAbilityRuntime($this->runtime($this->policy()), array('codi/sites', 'codi/site-abilities', 'codi/site-call'));
+        $signer = new FederationSigner($sites, 'test-federation-secret', static fn (): int => 3000, static fn (): string => '00112233445566778899aabbccddeeff');
+        $client = new FederationClient($sites, $signer, $local);
+
+        $error = $client->execute(2, 7, 'example/target', array('value' => 'remote'));
+        $this->assertTrue(is_wp_error($error));
+        $this->assertSame('fixture_failure', (string) $error->get_error_code());
+        $this->assertSame('Fixture failure.', (string) $error->get_error_message());
+        $this->assertSame(409, (int) (($error->get_error_data()['status'] ?? 0)));
     }
 
     public function test_assertions_are_bound_to_body_site_operation_expiry_and_one_time_nonce(): void
@@ -279,6 +364,46 @@ final class MultisitePackageTest extends TestCase
         $this->assertTrue(is_wp_error($replay));
         $this->assertSame('codi_multisite_replay', (string) ($replay->code ?? ''));
     }
+    public function test_federation_receiver_serializes_ability_errors_inside_successful_transport_response(): void
+    {
+        $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 2;
+        wp_set_current_user(0);
+
+        wp_register_ability('example/failure', array(
+            'label' => 'Failing ability',
+            'description' => 'Returns a controlled WordPress error.',
+            'category' => 'example',
+            'input_schema' => array('type' => 'object', 'additionalProperties' => false, 'properties' => array()),
+            'output_schema' => array('type' => 'object'),
+            'execute_callback' => static fn (array $input): \WP_Error => new \WP_Error('fixture_failure', 'Fixture failure.', array('status' => 409)),
+            'permission_callback' => static fn (array $input): bool => current_user_can('read'),
+            'meta' => array('public' => true),
+        ));
+
+        $policy = $this->policy();
+        $policy->saveSelection(array('example/failure'));
+        $sites = new SiteDirectory();
+        $local = new LocalAbilityRuntime($this->runtime($policy), array('codi/sites', 'codi/site-abilities', 'codi/site-call'));
+        $clock = static fn (): int => 2000;
+        $signer = new FederationSigner($sites, 'test-federation-secret', $clock, static fn (): string => 'abcdef0123456789abcdef0123456789');
+        $controller = new FederationController($sites, $signer, new ReplayGuard($sites, $clock), $local);
+
+        $body = json_encode(array(
+            'operation' => 'execute',
+            'payload' => array('ability' => 'example/failure', 'arguments' => array()),
+        ), JSON_UNESCAPED_SLASHES);
+        $this->assertTrue(is_string($body));
+        $token = $signer->issue(2, 7, 'execute', (string) $body);
+        $request = new MultisiteRequestDouble((string) $body, $token);
+
+        $this->assertTrue($controller->authorize($request) === true);
+        $response = $controller->handle($request);
+        $this->assertFalse(is_wp_error($response));
+        $this->assertSame('fixture_failure', (string) ($response['error']['code'] ?? ''));
+        $this->assertSame('Fixture failure.', (string) ($response['error']['message'] ?? ''));
+        $this->assertSame(409, (int) ($response['error']['status'] ?? 0));
+    }
+
     private function policy(): ExposurePolicy
     {
         return new ExposurePolicy(new AbilityCatalogue());

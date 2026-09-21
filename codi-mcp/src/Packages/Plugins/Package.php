@@ -88,7 +88,7 @@ final class Package implements AbilityPackage
             $installAbility,
             [
                 'label'               => 'Install uploaded plugin',
-                'description'         => 'Verify a completed upload and install it into the WordPress plugins directory. If that plugin directory already exists, overwrite it using WordPress Plugin_Upgrader. This does not intentionally change activation state. Use the returned plugin_file with ' . $activateAbility . ' or ' . $deactivateAbility . '.',
+                'description'         => 'Verify a completed upload and install or update the plugin in the WordPress plugins directory. If that plugin directory already exists, overwrite it using WordPress Plugin_Upgrader. This does not intentionally change activation state. Use the returned plugin_file with ' . $activateAbility . ' or ' . $deactivateAbility . '.',
                 'category'            => $category,
                 'input_schema'        => [
                     'type'       => 'object',

@@ -77,7 +77,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('sites'), array(
             'label' => 'List accessible network sites',
-            'description' => 'List sites in this multisite network that the authenticated WordPress user may access. Use the returned site_id when routing abilities.',
+            'description' => 'List accessible sites and their site_id values. Use this when the target site is not already known. Never guess or implicitly default a site_id; reuse a known site_id.',
             'category' => $this->category(),
             'input_schema' => $this->emptyInputSchema(),
             'output_schema' => $this->sitesOutputSchema(),
@@ -88,7 +88,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('site-abilities'), array(
             'label' => 'List target-site abilities',
-            'description' => 'Return the abilities currently registered and explicitly exposed by Codi MCP on one accessible target site, including their input and output schemas.',
+            'description' => 'Discover exposed abilities and input schemas for one explicit site. Use this only when the required ability or its input is not already known for that site, or when the catalogue may have changed. Pass search whenever you can describe the capability you need to keep the response small; each whitespace-separated search term must match somewhere in the ability name or description, so terms do not need to be adjacent. Omit search only when a full catalogue is genuinely useful. Reuse previously returned descriptors instead of calling this before every site-call.',
             'category' => $this->category(),
             'input_schema' => $this->siteInputSchema(),
             'output_schema' => $this->abilitiesOutputSchema(),
@@ -99,7 +99,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('site-call'), array(
             'label' => 'Call target-site ability',
-            'description' => 'Execute one ability in the target site\'s normally bootstrapped WordPress runtime. The target site\'s Codi exposure policy, input validation, and ability permission_callback remain authoritative.',
+            'description' => 'Execute a known ability on one explicit site. Use this directly when site_id, ability name, and required inputs are already known; do not call site-abilities first. The target site\'s exposure policy, input validation, and permission callback remain authoritative.',
             'category' => $this->category(),
             'input_schema' => $this->callInputSchema(),
             'output_schema' => $this->callOutputSchema(),
@@ -169,7 +169,10 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
         return array(
             'type' => 'object',
             'additionalProperties' => false,
-            'properties' => array('site_id' => array('type' => 'integer', 'minimum' => 1)),
+            'properties' => array(
+                'site_id' => array('type' => 'integer', 'minimum' => 1),
+                'search' => array('type' => 'string', 'maxLength' => 100),
+            ),
             'required' => array('site_id'),
         );
     }
@@ -198,7 +201,6 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
         ));
         return $this->strictObject(array(
             'items' => array('type' => 'array', 'items' => $site),
-            'total' => array('type' => 'integer'),
         ));
     }
 
@@ -206,12 +208,8 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
     {
         $descriptor = $this->strictObject(array(
             'name' => array('type' => 'string'),
-            'label' => array('type' => 'string'),
             'description' => array('type' => 'string'),
-            'category' => array('type' => 'string'),
-            'type' => array('type' => 'string', 'enum' => array('tool', 'resource', 'prompt')),
             'input_schema' => array('type' => array('object', 'null'), 'additionalProperties' => true),
-            'output_schema' => array('type' => array('object', 'null'), 'additionalProperties' => true),
             'annotations' => $this->strictObject(array(
                 'readonly' => array('type' => 'boolean'),
                 'destructive' => array('type' => 'boolean'),
@@ -219,7 +217,6 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
             )),
         ));
         return $this->strictObject(array(
-            'site_id' => array('type' => 'integer'),
             'abilities' => array('type' => 'array', 'items' => $descriptor),
         ));
     }
@@ -227,8 +224,6 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
     private function callOutputSchema(): array
     {
         return $this->strictObject(array(
-            'site_id' => array('type' => 'integer'),
-            'ability' => array('type' => 'string'),
             'result' => $this->jsonValueSchema(),
         ));
     }

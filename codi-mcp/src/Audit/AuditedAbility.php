@@ -23,7 +23,10 @@ final class AuditedAbility extends \WP_Ability
         $audit = new AuditLog();
         try {
             $eventId = $audit->beginAbility($this->get_name(), $input, $this->source());
-        } catch (\Throwable) {
+        } catch (\Throwable $throwable) {
+            if (function_exists('error_log')) {
+                error_log('Codi MCP could not persist an ability audit start: ' . $throwable->getMessage());
+            }
             return new \WP_Error('codi_mcp_audit_unavailable', 'Codi MCP audit storage is unavailable.');
         }
 

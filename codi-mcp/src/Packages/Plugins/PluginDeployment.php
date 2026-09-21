@@ -119,7 +119,15 @@ final class PluginDeployment
         $pluginDirExisted = is_dir(WP_PLUGIN_DIR . '/' . $pluginSlug);
         $skin = new \Automatic_Upgrader_Skin();
         $upgrader = new \Plugin_Upgrader($skin);
-        $result = $upgrader->install($zipPath, ['overwrite_package' => true]);
+        $bufferLevel = ob_get_level();
+        ob_start();
+        try {
+            $result = $upgrader->install($zipPath, ['overwrite_package' => true]);
+        } finally {
+            while (ob_get_level() > $bufferLevel) {
+                ob_end_clean();
+            }
+        }
 
         $upgraderError = UpgraderResult::error($result, 'plugin');
         if ($upgraderError instanceof \WP_Error) {

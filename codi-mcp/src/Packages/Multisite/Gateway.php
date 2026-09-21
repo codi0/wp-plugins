@@ -28,21 +28,41 @@ final class Gateway
         return $this->sites->isGatewaySite() && $userId > 0 && $this->sites->canAccessSite($userId, $siteId);
     }
 
-    /** @return array{items:array<int,array{site_id:int,name:string,url:string,is_main:bool}>,total:int} */
+    /** @return array{items:array<int,array{site_id:int,name:string,url:string,is_main:bool}>} */
     public function sites(array $input = array()): array
     {
         $items = $this->sites->accessibleSites($this->currentUserId());
-        return array('items' => $items, 'total' => count($items));
+        return array('items' => $items);
     }
 
     public function siteAbilities(array $input = array())
     {
         $siteId = (int) ($input['site_id'] ?? 0);
+        $search = strtolower(trim((string) ($input['search'] ?? '')));
         $abilities = $this->client->abilities($siteId, $this->currentUserId());
         if (is_wp_error($abilities)) {
             return $abilities;
         }
-        return array('site_id' => $siteId, 'abilities' => $abilities);
+        if ($search !== '') {
+            $terms = preg_split('/\\s+/', $search) ?: array();
+            $terms = array_values(array_filter($terms, static fn (string $term): bool => $term !== ''));
+            $abilities = array_values(array_filter(
+                $abilities,
+                static function (array $ability) use ($terms): bool {
+                    $haystack = strtolower(
+                        (string) ($ability['name'] ?? '') . ' ' .
+                        (string) ($ability['description'] ?? '')
+                    );
+                    foreach ($terms as $term) {
+                        if (!str_contains($haystack, $term)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+            ));
+        }
+        return array('abilities' => $abilities);
     }
 
     public function siteCall(array $input = array())
@@ -54,7 +74,7 @@ final class Gateway
         if (is_wp_error($result)) {
             return $result;
         }
-        return array('site_id' => $siteId, 'ability' => $ability, 'result' => $result);
+        return array('result' => $result);
     }
 
     public function extendTransportPermission(bool $allowed, $request = null): bool

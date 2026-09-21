@@ -449,19 +449,7 @@ final class Plugin
     /** @return string[] */
     private function networkServerAbilityNames(): array
     {
-        $names = array();
-        foreach ($this->enabledPackages() as $package) {
-            if (!$this->availability()->isNetworkManaged($package->key())) {
-                continue;
-            }
-            foreach ($package->abilityNames() as $abilityName) {
-                $abilityName = trim((string) $abilityName);
-                if ($abilityName !== '') {
-                    $names[$abilityName] = true;
-                }
-            }
-        }
-        return array_keys($names);
+        return $this->multisiteAbilityNames();
     }
 
     private function exposure(): ExposurePolicy

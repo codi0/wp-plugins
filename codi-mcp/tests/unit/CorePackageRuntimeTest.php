@@ -289,7 +289,7 @@ final class CorePackageRuntimeTest extends TestCase
         $this->assertTrue(in_array('codi/network-managed-test', $siteTools, true));
         $this->assertTrue(in_array('codi/site-only-test', $siteTools, true));
         $this->assertFalse(in_array('codi/sites', $siteTools, true));
-        $this->assertTrue(in_array('codi/network-managed-test', $networkTools, true));
+        $this->assertFalse(in_array('codi/network-managed-test', $networkTools, true));
         $this->assertTrue(in_array('codi/sites', $networkTools, true));
         $this->assertFalse(in_array('codi/site-only-test', $networkTools, true));
         $this->assertSame('codi', (string) ($adapter->servers['codi-mcp'][2] ?? ''));

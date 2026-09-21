@@ -105,6 +105,19 @@ final class FederationClient
         if (!is_array($decoded)) {
             return $this->error('codi_multisite_bad_remote_response', 'The target site returned an invalid federation response.', 502);
         }
+        if (array_key_exists('error', $decoded)) {
+            $remoteError = $decoded['error'];
+            if (!is_array($remoteError)
+                || !is_string($remoteError['code'] ?? null)
+                || !is_string($remoteError['message'] ?? null)) {
+                return $this->error('codi_multisite_bad_remote_response', 'The target site returned an invalid federation error response.', 502);
+            }
+            $remoteStatus = (int) ($remoteError['status'] ?? 500);
+            if ($remoteStatus < 400 || $remoteStatus > 599) {
+                $remoteStatus = 500;
+            }
+            return $this->error($remoteError['code'], $remoteError['message'], $remoteStatus);
+        }
 
         return $decoded;
     }

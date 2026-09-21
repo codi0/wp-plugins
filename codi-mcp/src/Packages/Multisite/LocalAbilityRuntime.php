@@ -29,12 +29,8 @@ final class LocalAbilityRuntime
             $annotations = is_array($descriptor['annotations'] ?? null) ? $descriptor['annotations'] : array();
             $items[] = array(
                 'name' => $abilityName,
-                'label' => (string) $descriptor['label'],
                 'description' => (string) $descriptor['description'],
-                'category' => (string) $descriptor['category'],
-                'type' => (string) $descriptor['type'],
                 'input_schema' => $descriptor['input_schema'],
-                'output_schema' => $descriptor['output_schema'],
                 'annotations' => array(
                     'readonly' => (bool) ($annotations['readonly'] ?? false),
                     'destructive' => (bool) ($annotations['destructive'] ?? false),

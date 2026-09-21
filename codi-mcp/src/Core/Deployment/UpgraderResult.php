@@ -11,7 +11,7 @@ final class UpgraderResult
         if ($result instanceof \WP_Error || (function_exists('is_wp_error') && is_wp_error($result))) {
             return $result;
         }
-        if (false !== $result) {
+        if (true === $result) {
             return null;
         }
 
