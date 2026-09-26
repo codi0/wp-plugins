@@ -94,6 +94,11 @@ final class ThemeDeployment
         if ($package instanceof \WP_Error) {
             return $package;
         }
+        $preparedPackage = $this->prepareInstallPackage($zipPath, $stylesheet, $uploadId, (string) ($package['layout'] ?? 'wrapped'));
+        if ($preparedPackage instanceof \WP_Error) {
+            return $preparedPackage;
+        }
+        $installZipPath = (string) ($preparedPackage['path'] ?? $zipPath);
 
         require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
         $installedBefore = (array) wp_get_themes(array('errors' => null, 'allowed' => null));
@@ -103,11 +108,12 @@ final class ThemeDeployment
         $bufferLevel = ob_get_level();
         ob_start();
         try {
-            $result = $upgrader->install($zipPath, array('overwrite_package' => true));
+            $result = $upgrader->install($installZipPath, array('overwrite_package' => true));
         } finally {
             while (ob_get_level() > $bufferLevel) {
                 ob_end_clean();
             }
+            $this->cleanupPreparedInstallPackage($preparedPackage);
         }
         $upgraderError = UpgraderResult::error($result, 'theme');
         if ($upgraderError instanceof \WP_Error) {
@@ -228,7 +234,34 @@ final class ThemeDeployment
             if (!is_string($source) || !is_string($themeRoot) || !$this->withinRoot($source, $themeRoot)) {
                 return new \WP_Error('codi_mcp_theme_export_scope', 'Theme source directory is outside the WordPress theme root.');
             }
-            $staged = $this->downloads->stageDirectory(self::DOWNLOAD_PURPOSE, $source, $stylesheet, $stylesheet . '.zip', array('stylesheet' => $stylesheet));
+
+            $isBlockTheme = method_exists($theme, 'is_block_theme') && (bool) $theme->is_block_theme();
+            if ($isBlockTheme) {
+                $sourceValidation = $this->validateNativeThemeSource($source);
+                if ($sourceValidation instanceof \WP_Error) {
+                    return $sourceValidation;
+                }
+                $nativeExport = $this->generateNativeThemeExport($theme, $themes, $stylesheet, $source);
+                if ($nativeExport instanceof \WP_Error) {
+                    return $nativeExport;
+                }
+                if (class_exists('ZipArchive') || class_exists('PclZip')) {
+                    $archiveValidation = (new ZipArchiveGuard())->validate($nativeExport);
+                    if ($archiveValidation instanceof \WP_Error) {
+                        @unlink($nativeExport);
+                        return $archiveValidation;
+                    }
+                }
+                try {
+                    $staged = $this->downloads->stageFile(self::DOWNLOAD_PURPOSE, $nativeExport, $stylesheet . '.zip', array('stylesheet' => $stylesheet, 'layout' => 'wordpress-native'));
+                } finally {
+                    if (is_file($nativeExport)) {
+                        @unlink($nativeExport);
+                    }
+                }
+            } else {
+                $staged = $this->downloads->stageDirectory(self::DOWNLOAD_PURPOSE, $source, $stylesheet, $stylesheet . '.zip', array('stylesheet' => $stylesheet, 'layout' => 'wrapped-directory'));
+            }
             if ($staged instanceof \WP_Error) {
                 return $staged;
             }
@@ -292,17 +325,157 @@ final class ThemeDeployment
             return $unzipped;
         }
         $entries = array_values(array_filter((array) scandir($inspectDir), static fn (string $entry): bool => !in_array($entry, array('.', '..', '__MACOSX'), true)));
-        $themeDir = $inspectDir . DIRECTORY_SEPARATOR . $expectedStylesheet;
-        if (count($entries) !== 1 || $entries[0] !== $expectedStylesheet || !is_dir($themeDir) || !is_file($themeDir . DIRECTORY_SEPARATOR . 'style.css')) {
+        $wrappedThemeDir = $inspectDir . DIRECTORY_SEPARATOR . $expectedStylesheet;
+        $layout = 'wrapped';
+        if (count($entries) === 1 && $entries[0] === $expectedStylesheet && is_dir($wrappedThemeDir) && is_file($wrappedThemeDir . DIRECTORY_SEPARATOR . 'style.css')) {
+            $themeDir = $wrappedThemeDir;
+        } elseif (is_file($inspectDir . DIRECTORY_SEPARATOR . 'style.css')) {
+            $themeDir = $inspectDir;
+            $layout = 'root';
+        } else {
             $wp_filesystem->delete($inspectDir, true);
-            return new \WP_Error('codi_mcp_bad_theme_package', 'ZIP must contain exactly one top-level directory matching stylesheet and a root style.css file.');
+            return new \WP_Error('codi_mcp_bad_theme_package', 'ZIP must contain either one top-level directory matching stylesheet or a native WordPress root-level theme, with a style.css file.');
         }
         $headers = function_exists('get_file_data') ? get_file_data($themeDir . DIRECTORY_SEPARATOR . 'style.css', array('Name' => 'Theme Name', 'Version' => 'Version'), 'theme') : array();
         $wp_filesystem->delete($inspectDir, true);
         if (trim((string) ($headers['Name'] ?? '')) === '') {
             return new \WP_Error('codi_mcp_bad_theme_package', 'Theme style.css does not contain a valid Theme Name header.');
         }
-        return array('name' => (string) $headers['Name'], 'version' => (string) ($headers['Version'] ?? ''));
+        return array('name' => (string) $headers['Name'], 'version' => (string) ($headers['Version'] ?? ''), 'layout' => $layout);
+    }
+
+    /** @param array<string,object> $themes @return string|\WP_Error */
+    private function generateNativeThemeExport(object $theme, array $themes, string $stylesheet, string $stylesheetDirectory): string|\WP_Error
+    {
+        if (!function_exists('wp_generate_block_templates_export_file')) {
+            return new \WP_Error('codi_mcp_theme_export_unavailable', 'WordPress native block-theme export is unavailable.');
+        }
+
+        $template = method_exists($theme, 'get_template') ? trim((string) $theme->get_template()) : $stylesheet;
+        if ($template === '') {
+            $template = $stylesheet;
+        }
+        $templateDirectory = $stylesheetDirectory;
+        if ($template !== $stylesheet) {
+            $templateTheme = $themes[$template] ?? null;
+            $candidate = is_object($templateTheme) && method_exists($templateTheme, 'get_stylesheet_directory')
+                ? (string) $templateTheme->get_stylesheet_directory()
+                : (function_exists('get_theme_root') ? rtrim((string) get_theme_root($template), "\\/") . DIRECTORY_SEPARATOR . $template : '');
+            $candidateRoot = function_exists('get_theme_root') ? realpath((string) get_theme_root($template)) : false;
+            $candidate = realpath($candidate);
+            if (!is_string($candidate) || !is_string($candidateRoot) || !$this->withinRoot($candidate, $candidateRoot)) {
+                return new \WP_Error('codi_mcp_theme_export_parent_scope', 'Parent theme source directory is outside the WordPress theme root.');
+            }
+            $parentValidation = $this->validateNativeThemeSource($candidate);
+            if ($parentValidation instanceof \WP_Error) {
+                return $parentValidation;
+            }
+            $templateDirectory = $candidate;
+        }
+
+        $stylesheetFilter = static fn ($value): string => $stylesheet;
+        $templateFilter = static fn ($value): string => $template;
+        $stylesheetDirectoryFilter = static fn ($value): string => $stylesheetDirectory;
+        $templateDirectoryFilter = static fn ($value): string => $templateDirectory;
+        $priority = PHP_INT_MAX;
+
+        add_filter('stylesheet', $stylesheetFilter, $priority, 1);
+        add_filter('template', $templateFilter, $priority, 1);
+        add_filter('stylesheet_directory', $stylesheetDirectoryFilter, $priority, 3);
+        add_filter('template_directory', $templateDirectoryFilter, $priority, 3);
+        $this->cleanThemeJsonResolverCache();
+        try {
+            $result = wp_generate_block_templates_export_file();
+        } catch (\Throwable $exception) {
+            return new \WP_Error('codi_mcp_theme_export_failed', 'WordPress native theme export failed.');
+        } finally {
+            remove_filter('template_directory', $templateDirectoryFilter, $priority);
+            remove_filter('stylesheet_directory', $stylesheetDirectoryFilter, $priority);
+            remove_filter('template', $templateFilter, $priority);
+            remove_filter('stylesheet', $stylesheetFilter, $priority);
+            $this->cleanThemeJsonResolverCache();
+        }
+
+        if ($result instanceof \WP_Error) {
+            return $result;
+        }
+        $path = is_string($result) ? realpath($result) : false;
+        if (!is_string($path) || !is_file($path)) {
+            return new \WP_Error('codi_mcp_theme_export_failed', 'WordPress did not produce a readable theme export ZIP.');
+        }
+        return $path;
+    }
+
+    /** @return true|\WP_Error */
+    private function validateNativeThemeSource(string $sourceRoot): true|\WP_Error
+    {
+        try {
+            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($sourceRoot, \FilesystemIterator::SKIP_DOTS));
+            foreach ($iterator as $info) {
+                if (!$info instanceof \SplFileInfo) {
+                    continue;
+                }
+                $path = $info->getPathname();
+                $relative = ltrim(str_replace('\\', '/', substr($path, strlen($sourceRoot))), '/');
+                if (function_exists('wp_is_theme_directory_ignored') && wp_is_theme_directory_ignored($relative)) {
+                    continue;
+                }
+                if ($info->isLink()) {
+                    return new \WP_Error('codi_mcp_export_symlink', 'Theme export refuses symbolic links included by the WordPress native exporter.');
+                }
+                if (!$info->isFile()) {
+                    continue;
+                }
+                $resolved = $info->getRealPath();
+                if (!is_string($resolved) || !$this->withinRoot($resolved, $sourceRoot)) {
+                    return new \WP_Error('codi_mcp_export_scope', 'Theme export source resolves outside the selected theme directory.');
+                }
+            }
+        } catch (\Throwable $exception) {
+            return new \WP_Error('codi_mcp_export_scan_failed', 'Theme export source could not be scanned safely.');
+        }
+        return true;
+    }
+
+    private function cleanThemeJsonResolverCache(): void
+    {
+        if (class_exists('WP_Theme_JSON_Resolver') && method_exists('WP_Theme_JSON_Resolver', 'clean_cached_data')) {
+            \WP_Theme_JSON_Resolver::clean_cached_data();
+        }
+    }
+
+    /** @return array{path:string,directory:string}|\WP_Error */
+    private function prepareInstallPackage(string $zipPath, string $stylesheet, string $uploadId, string $layout): array|\WP_Error
+    {
+        if ($layout !== 'root') {
+            return array('path' => $zipPath, 'directory' => '');
+        }
+        $temporary = function_exists('get_temp_dir') ? (string) get_temp_dir() : sys_get_temp_dir();
+        $directory = rtrim($temporary, "\\/") . DIRECTORY_SEPARATOR . 'codi-mcp' . DIRECTORY_SEPARATOR . 'theme-install-' . $uploadId;
+        $created = is_dir($directory) || (function_exists('wp_mkdir_p') ? wp_mkdir_p($directory) : @mkdir($directory, 0700, true));
+        if (!$created) {
+            return new \WP_Error('codi_mcp_storage', 'Could not create the temporary native-theme installation directory.');
+        }
+        $preparedPath = $directory . DIRECTORY_SEPARATOR . $stylesheet . '.zip';
+        if (!@copy($zipPath, $preparedPath)) {
+            @rmdir($directory);
+            return new \WP_Error('codi_mcp_storage', 'Could not prepare the native WordPress theme ZIP for installation.');
+        }
+        return array('path' => $preparedPath, 'directory' => $directory);
+    }
+
+    /** @param array{path?:string,directory?:string} $preparedPackage */
+    private function cleanupPreparedInstallPackage(array $preparedPackage): void
+    {
+        $directory = (string) ($preparedPackage['directory'] ?? '');
+        if ($directory === '') {
+            return;
+        }
+        $path = (string) ($preparedPackage['path'] ?? '');
+        if ($path !== '' && is_file($path)) {
+            @unlink($path);
+        }
+        @rmdir($directory);
     }
 
     private function withinRoot(string $path, string $root): bool

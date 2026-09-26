@@ -190,6 +190,7 @@ namespace {
         public function get(string $key): string { return (string) ($this->data[$key] ?? ''); }
         public function get_template(): string { return (string) ($this->data['Template'] ?? $this->stylesheet); }
         public function get_stylesheet(): string { return $this->stylesheet; }
+        public function get_stylesheet_directory(): string { return rtrim((string) ($GLOBALS['codi_mcp_test_wp_theme_root'] ?? sys_get_temp_dir()), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . $this->stylesheet; }
         public function parent() { return null; }
         public function errors() { return $this->broken ? new \WP_Error('broken_theme', 'Broken theme.') : false; }
         public function is_block_theme(): bool { return $this->block; }
@@ -211,6 +212,18 @@ namespace {
             return $themes;
         }
     }
+    if (!function_exists('wp_generate_block_templates_export_file')) {
+        function wp_generate_block_templates_export_file() {
+            $baseStylesheet = get_stylesheet();
+            $stylesheet = (string) apply_filters('stylesheet', $baseStylesheet);
+            $root = rtrim((string) ($GLOBALS['codi_mcp_test_wp_theme_root'] ?? sys_get_temp_dir()), DIRECTORY_SEPARATOR);
+            $directory = (string) apply_filters('stylesheet_directory', $root . DIRECTORY_SEPARATOR . $stylesheet, $stylesheet, $root);
+            $GLOBALS['codi_test_native_theme_exports'][] = array('stylesheet' => $stylesheet, 'directory' => $directory);
+            $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'codi-native-theme-' . bin2hex(random_bytes(6)) . '.zip';
+            file_put_contents($path, json_encode(array('stylesheet' => $stylesheet, 'directory' => $directory), JSON_UNESCAPED_SLASHES));
+            return $path;
+        }
+    }
     if (!function_exists('validate_theme_requirements')) {
         function validate_theme_requirements(string $stylesheet) { return true; }
     }
@@ -225,6 +238,7 @@ namespace CodiMcpTest\Unit {
     use CodiMcp\Packages\Site\SiteManager;
     use CodiMcp\Packages\Themes\ThemeDeployment;
     use CodiMcp\Packages\Themes\ThemeInspection;
+    use CodiMcp\Core\Downloads\ArtifactDownloadStore;
     use CodiMcpTest\Framework\TestCase;
 
     final class StructuredContentSiteTest extends TestCase
@@ -488,6 +502,32 @@ namespace CodiMcpTest\Unit {
             $stylesheets = array_map(static fn (array $theme): string => (string) ($theme['stylesheet'] ?? ''), (array) ($result['items'] ?? array()));
             sort($stylesheets);
             $this->assertSame(array('allowed-theme', 'blocked-theme', 'fixture-theme'), $stylesheets);
+        }
+
+        public function test_block_theme_export_uses_native_export_for_inactive_theme_without_switching_site_theme(): void
+        {
+            $root = rtrim((string) $GLOBALS['codi_mcp_test_wp_theme_root'], DIRECTORY_SEPARATOR);
+            $themeDir = $root . DIRECTORY_SEPARATOR . 'allowed-theme';
+            @mkdir($themeDir, 0777, true);
+            file_put_contents($themeDir . DIRECTORY_SEPARATOR . 'style.css', "/*\nTheme Name: Allowed\nVersion: 2.0\n*/\n");
+            file_put_contents($themeDir . DIRECTORY_SEPARATOR . 'theme.json', '{"version":2}');
+            $GLOBALS['codi_test_native_theme_exports'] = array();
+
+            $downloadRoot = \codi_mcp_test_temp_dir() . DIRECTORY_SEPARATOR . 'native-theme-export-' . bin2hex(random_bytes(4));
+            $downloads = new ArtifactDownloadStore(20 * 1024 * 1024, 256 * 1024, $downloadRoot);
+            $manager = new ThemeDeployment(20 * 1024 * 1024, 256 * 1024, null, $downloads);
+            $before = get_stylesheet();
+            $result = $manager->export(array('stylesheet' => 'allowed-theme', 'offset' => 0));
+
+            $this->assertFalse(is_wp_error($result));
+            $this->assertSame(true, (bool) ($result['complete'] ?? false));
+            $payload = json_decode((string) base64_decode((string) ($result['data'] ?? ''), true), true);
+            $this->assertSame('allowed-theme', (string) ($payload['stylesheet'] ?? ''));
+            $this->assertSame((string) realpath($themeDir), (string) ($payload['directory'] ?? ''));
+            $this->assertSame($before, get_stylesheet());
+            $this->assertSame('allowed-theme', (string) ($GLOBALS['codi_test_native_theme_exports'][0]['stylesheet'] ?? ''));
+            $this->assertSame(array(), array_values((array) ($GLOBALS['codi_mcp_test_filters']['stylesheet'] ?? array())));
+            $this->assertSame(array(), array_values((array) ($GLOBALS['codi_mcp_test_filters']['template'] ?? array())));
         }
 
         public function test_theme_activation_respects_current_site_multisite_allowance(): void

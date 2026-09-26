@@ -97,7 +97,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-export',
             'Export installed theme ZIP',
-            'Package one exact installed theme directory as a bounded ZIP and return it in sequential base64 chunks. On the first call omit download_id and use offset 0; subsequent calls repeat stylesheet and pass download_id with next_offset. Symbolic links and out-of-root files are rejected.',
+            'Export one exact installed theme as a bounded ZIP and return it in sequential base64 chunks. Block themes use the WordPress native Site Editor exporter so database-backed templates, template parts, and Global Styles are baked into the artifact; inactive themes are exported through a request-local virtual theme context without activation. Classic themes use whole-directory export. On subsequent calls repeat stylesheet and pass download_id with next_offset.',
             array(
                 'type' => 'object', 'additionalProperties' => false,
                 'properties' => array('stylesheet' => ThemeInspection::stylesheetSchema(), 'download_id' => $this->idSchema(), 'offset' => array('type' => 'integer', 'minimum' => 0)),

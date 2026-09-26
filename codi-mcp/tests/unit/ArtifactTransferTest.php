@@ -85,6 +85,30 @@ final class ArtifactTransferTest extends TestCase
         $this->assertSame('codi_mcp_download_purpose_mismatch', $wrongPurpose->code);
     }
 
+    public function test_shared_download_store_stages_prebuilt_zip_bytes_without_rewriting(): void
+    {
+        $source = $this->root . DIRECTORY_SEPARATOR . 'native-theme.zip';
+        $payload = "PK\x03\x04native-wordpress-export";
+        file_put_contents($source, $payload);
+        $store = new ArtifactDownloadStore(4096, 8, $this->root . DIRECTORY_SEPARATOR . 'file-downloads', 3600, 10, 1024);
+
+        $staged = $store->stageFile('themes.export', $source, 'demo-theme.zip', array('stylesheet' => 'demo-theme'));
+        $this->assertFalse(is_wp_error($staged));
+        $downloadId = (string) $staged['download_id'];
+        $bytes = '';
+        $offset = 0;
+        do {
+            $chunk = $store->readBase64($downloadId, 'themes.export', $offset);
+            $this->assertFalse(is_wp_error($chunk));
+            $bytes .= base64_decode((string) $chunk['data'], true) ?: '';
+            $offset = (int) $chunk['next_offset'];
+        } while (!(bool) $chunk['complete']);
+
+        $this->assertSame($payload, $bytes);
+        $this->assertSame('demo-theme.zip', (string) $chunk['filename']);
+        $this->assertSame(hash('sha256', $payload), (string) $chunk['sha256']);
+    }
+
     public function test_download_store_rejects_oversized_uncompressed_source(): void
     {
         $source = $this->root . DIRECTORY_SEPARATOR . 'large-source';

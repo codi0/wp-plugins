@@ -48,15 +48,11 @@ final class ArtifactDownloadStore
             return new \WP_Error('codi_mcp_bad_archive_filename', 'Archive filename is invalid.');
         }
 
-        $sourceRoot = realpath($sourceDirectory);
-        if (!is_string($sourceRoot) || '' === $sourceRoot || !is_dir($sourceRoot) || is_link($sourceRoot)) {
-            return new \WP_Error('codi_mcp_export_source_invalid', 'Export source directory is unavailable.');
-        }
-
-        $scan = $this->scanSource($sourceRoot);
+        $scan = $this->validateDirectory($sourceDirectory);
         if ($scan instanceof \WP_Error) {
             return $scan;
         }
+        $sourceRoot = (string) $scan['source_root'];
         if (!$this->ensureDirectory($this->rootDirectory)) {
             return new \WP_Error('codi_mcp_storage', 'Could not create the artifact download directory.');
         }
@@ -98,6 +94,93 @@ final class ArtifactDownloadStore
             'filename' => $filename,
             'file_count' => (int) $scan['file_count'],
             'source_bytes' => (int) $scan['source_bytes'],
+            'metadata' => $metadata,
+        );
+        $encoded = $this->encodeJson($record);
+        if (!is_string($encoded) || false === @file_put_contents($paths['meta'], $encoded, LOCK_EX)) {
+            $this->removeDownloadFiles($paths);
+            return new \WP_Error('codi_mcp_storage', 'Could not save artifact download metadata.');
+        }
+        @chmod($paths['meta'], 0600);
+
+        return array('download_id' => $downloadId, 'meta' => $record);
+    }
+
+    /** @return array{source_root:string,files:array<int,string>,file_count:int,source_bytes:int}|\WP_Error */
+    private function validateDirectory(string $sourceDirectory): array|\WP_Error
+    {
+        $sourceRoot = realpath($sourceDirectory);
+        if (!is_string($sourceRoot) || '' === $sourceRoot || !is_dir($sourceRoot) || is_link($sourceRoot)) {
+            return new \WP_Error('codi_mcp_export_source_invalid', 'Export source directory is unavailable.');
+        }
+
+        $scan = $this->scanSource($sourceRoot);
+        if ($scan instanceof \WP_Error) {
+            return $scan;
+        }
+        $scan['source_root'] = $sourceRoot;
+        return $scan;
+    }
+
+    /** @param array<string,mixed> $metadata @return array<string,mixed>|\WP_Error */
+    public function stageFile(string $purpose, string $sourceFile, string $filename, array $metadata = array()): array|\WP_Error
+    {
+        $purpose = strtolower(trim($purpose));
+        $filename = trim($filename);
+        if (1 !== preg_match('/^[a-z0-9][a-z0-9._-]{0,99}$/', $purpose)) {
+            return new \WP_Error('codi_mcp_bad_download_purpose', 'Download purpose is invalid.');
+        }
+        if (1 !== preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.zip$/', $filename)) {
+            return new \WP_Error('codi_mcp_bad_archive_filename', 'Archive filename is invalid.');
+        }
+
+        $sourcePath = realpath($sourceFile);
+        if (!is_string($sourcePath) || '' === $sourcePath || !is_file($sourcePath) || is_link($sourcePath)) {
+            return new \WP_Error('codi_mcp_export_source_invalid', 'Export source file is unavailable.');
+        }
+        $sourceBytes = @filesize($sourcePath);
+        if (false === $sourceBytes || $sourceBytes < 1 || $sourceBytes > $this->maxArchiveBytes) {
+            return new \WP_Error('codi_mcp_export_archive_too_large', 'Generated ZIP is empty or exceeds the maximum artifact size.');
+        }
+        if (!$this->ensureDirectory($this->rootDirectory)) {
+            return new \WP_Error('codi_mcp_storage', 'Could not create the artifact download directory.');
+        }
+        $this->cleanupExpired();
+
+        do {
+            $downloadId = bin2hex(random_bytes(16));
+            $paths = $this->paths($downloadId);
+        } while (file_exists($paths['directory']));
+
+        if (!@mkdir($paths['directory'], 0700)) {
+            return new \WP_Error('codi_mcp_storage', 'Could not create the artifact download staging directory.');
+        }
+        @chmod($paths['directory'], 0700);
+        if (!@copy($sourcePath, $paths['archive'])) {
+            $this->removeDownloadFiles($paths);
+            return new \WP_Error('codi_mcp_storage', 'Could not stage the generated artifact.');
+        }
+        clearstatcache(true, $paths['archive']);
+        $size = @filesize($paths['archive']);
+        if (false === $size || (int) $size !== (int) $sourceBytes) {
+            $this->removeDownloadFiles($paths);
+            return new \WP_Error('codi_mcp_storage', 'Generated artifact size changed while staging.');
+        }
+        $sha256 = hash_file('sha256', $paths['archive']);
+        if (!is_string($sha256) || '' === $sha256) {
+            $this->removeDownloadFiles($paths);
+            return new \WP_Error('codi_mcp_storage', 'Could not hash the generated artifact.');
+        }
+        @chmod($paths['archive'], 0600);
+
+        $record = array(
+            'purpose' => $purpose,
+            'created' => time(),
+            'size' => (int) $size,
+            'sha256' => $sha256,
+            'filename' => $filename,
+            'file_count' => 1,
+            'source_bytes' => (int) $sourceBytes,
             'metadata' => $metadata,
         );
         $encoded = $this->encodeJson($record);
