@@ -85,7 +85,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-delete',
             'Delete installed theme',
-            'Permanently delete one exact inactive theme through WordPress native theme deletion. The active theme, its active parent, and any parent required by an installed child theme are protected. Deletion is unavailable on multisite because theme files are shared.',
+            'Permanently delete one exact inactive theme through WordPress native theme deletion. On multisite, deletion requires a super administrator and is refused while that theme or any child theme using it as a parent is active on any site.',
             $this->strictObject(array('stylesheet' => ThemeInspection::stylesheetSchema())),
             $this->strictObject(array('stylesheet' => array('type' => 'string'), 'deleted' => array('type' => 'boolean'))),
             [$this, 'delete'], [$this, 'canDeleteThemes'], true, false

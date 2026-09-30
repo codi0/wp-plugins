@@ -7,6 +7,7 @@ namespace CodiMcp\Packages\Themes;
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
 use CodiMcp\Core\Archives\ZipArchiveGuard;
 use CodiMcp\Core\Deployment\UpgraderResult;
+use CodiMcp\Core\Deployment\NetworkAssetUsage;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
 use CodiMcp\Core\Uploads\UploadStore;
 
@@ -39,7 +40,11 @@ final class ThemeDeployment
 
     public function canDeleteThemes(): bool
     {
-        return current_user_can('delete_themes') && !is_multisite();
+        if (!current_user_can('delete_themes')) {
+            return false;
+        }
+
+        return !is_multisite() || is_super_admin();
     }
 
     public function canExportThemes(): bool
@@ -174,6 +179,7 @@ final class ThemeDeployment
 
     public function delete($input)
     {
+        require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/theme.php';
         $input = is_array($input) ? $input : array();
         $stylesheet = trim((string) ($input['stylesheet'] ?? ''));
@@ -182,22 +188,10 @@ final class ThemeDeployment
         if ($stylesheet === '' || !is_object($theme)) {
             return new \WP_Error('codi_mcp_theme_not_found', 'Installed theme was not found.');
         }
-        if (is_multisite()) {
-            return new \WP_Error('codi_mcp_theme_delete_multisite', 'Theme deletion is unavailable on multisite because theme files are shared across sites.');
+        if ((new NetworkAssetUsage())->themeOrChildActiveAnywhere($stylesheet)) {
+            return new \WP_Error('codi_mcp_theme_active', 'Theme or one of its child themes is active on at least one site. Switch those sites away before deleting it.');
         }
-        $active = function_exists('get_stylesheet') ? (string) get_stylesheet() : '';
-        $template = function_exists('get_template') ? (string) get_template() : '';
-        if ($stylesheet === $active || $stylesheet === $template) {
-            return new \WP_Error('codi_mcp_theme_active', 'The active theme or its active parent cannot be deleted.');
-        }
-        foreach ($themes as $childStylesheet => $candidate) {
-            if ($childStylesheet === $stylesheet || !is_object($candidate) || !method_exists($candidate, 'get_template')) {
-                continue;
-            }
-            if ((string) $candidate->get_template() === $stylesheet) {
-                return new \WP_Error('codi_mcp_theme_parent_in_use', 'Theme cannot be deleted because an installed child theme depends on it.');
-            }
-        }
+
         $result = delete_theme($stylesheet);
         if (is_wp_error($result)) {
             return $result;

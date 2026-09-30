@@ -53,7 +53,7 @@ final class LocalAbilityRuntime
 
         $descriptor = $this->runtime->catalogue()->get($abilityName);
         $ability = $this->runtime->catalogue()->ability($abilityName);
-        if ($descriptor === null || !is_object($ability) || !method_exists($ability, 'execute')) {
+        if ($descriptor === null || $ability === null) {
             return $this->error('codi_multisite_ability_unavailable', 'The requested ability is not registered on the target site.', 404);
         }
 
@@ -75,13 +75,14 @@ final class LocalAbilityRuntime
         return $result;
     }
 
-    private function normalizeInput(object $ability, $input)
+    private function normalizeInput(\WP_Ability $ability, $input)
     {
-        if ($input !== null || !method_exists($ability, 'get_input_schema')) {
+        if ($input !== null) {
             return $input;
         }
+
         $schema = $ability->get_input_schema();
-        return is_array($schema) && ($schema['type'] ?? null) === 'object' ? array() : $input;
+        return is_array($schema) && ($schema['type'] ?? null) === 'object' ? array() : null;
     }
 
     private function auditExternal(string $abilityName, string $status, string $reason): void
@@ -90,7 +91,7 @@ final class LocalAbilityRuntime
             $this->runtime->audit()->recordAbilityOutcome($abilityName, $status, 'federation', $reason);
         } catch (\Throwable) {
             if (function_exists('error_log')) {
-                error_log('Codi MCP could not persist a federated adopted ability audit event.');
+                error_log('Codi MCP could not persist a federated external ability audit event.');
             }
         }
     }

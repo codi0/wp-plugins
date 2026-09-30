@@ -5,6 +5,7 @@ namespace CodiMcp\Packages\Plugins;
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
 use CodiMcp\Core\Archives\ZipArchiveGuard;
 use CodiMcp\Core\Deployment\UpgraderResult;
+use CodiMcp\Core\Deployment\NetworkAssetUsage;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
 use CodiMcp\Core\Uploads\UploadStore;
 
@@ -56,8 +57,7 @@ final class PluginDeployment
             return false;
         }
 
-        // Plugin files are shared across sites on multisite, so deletion is not site-local there.
-        return !is_multisite();
+        return !is_multisite() || is_super_admin();
     }
 
     public function canExportPlugins(): bool
@@ -277,10 +277,6 @@ final class PluginDeployment
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
         require_once ABSPATH . 'wp-admin/includes/file.php';
 
-        if (is_multisite()) {
-            return new \WP_Error('codi_mcp_plugin_delete_multisite', 'Plugin deletion is unavailable on multisite because plugin files are shared across sites.');
-        }
-
         $input = is_array($input) ? $input : [];
         $requested = isset($input['plugin_file']) ? (string) $input['plugin_file'] : '';
         $pluginFile = $requested !== '' ? plugin_basename($requested) : '';
@@ -292,8 +288,8 @@ final class PluginDeployment
         if ($pluginFile === CODI_MCP_PLUGIN_BASENAME) {
             return new \WP_Error('codi_mcp_self_delete', 'Codi MCP cannot delete itself.');
         }
-        if (is_plugin_active($pluginFile)) {
-            return new \WP_Error('codi_mcp_plugin_active', 'Deactivate the plugin before deleting it.');
+        if ((new NetworkAssetUsage())->pluginActiveAnywhere($pluginFile)) {
+            return new \WP_Error('codi_mcp_plugin_active', 'Plugin is active on the network or at least one site. Deactivate it everywhere before deleting it.');
         }
 
         $result = delete_plugins([$pluginFile]);

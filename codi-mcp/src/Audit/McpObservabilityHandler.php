@@ -22,7 +22,7 @@ final class McpObservabilityHandler implements McpObservabilityHandlerInterface
         }
 
         $descriptor = (new AbilityCatalogue())->get($abilityName);
-        if ($descriptor === null || !empty($descriptor['owned']) || empty($descriptor['adoptable'])) {
+        if ($descriptor === null || !empty($descriptor['owned']) || empty($descriptor['mcp_public'])) {
             return;
         }
 
@@ -45,7 +45,7 @@ final class McpObservabilityHandler implements McpObservabilityHandlerInterface
             );
         } catch (\Throwable) {
             if (function_exists('error_log')) {
-                error_log('Codi MCP could not persist an adopted ability audit event.');
+                error_log('Codi MCP could not persist an external ability audit event.');
             }
         }
     }

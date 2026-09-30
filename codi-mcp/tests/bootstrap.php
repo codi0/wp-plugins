@@ -6,6 +6,10 @@ if (!defined('ABSPATH')) {
     define('ABSPATH', __DIR__ . DIRECTORY_SEPARATOR);
 }
 
+if (!defined('CODI_MCP_ABILITY_PREFIX')) {
+    define('CODI_MCP_ABILITY_PREFIX', 'codi');
+}
+
 if (!defined('CODI_MCP_TEST_PLUGIN_DIR')) {
     define('CODI_MCP_TEST_PLUGIN_DIR', dirname(__DIR__) . DIRECTORY_SEPARATOR);
 }
@@ -72,6 +76,7 @@ $GLOBALS['codi_mcp_test_wp_current_blog_id'] ??= 1;
 $GLOBALS['codi_mcp_test_wp_blog_stack'] ??= array();
 $GLOBALS['codi_mcp_test_wp_current_user_id'] ??= 0;
 $GLOBALS['codi_mcp_test_wp_users'] ??= array();
+$GLOBALS['codi_mcp_test_wp_super_admins'] ??= array(7);
 $GLOBALS['codi_mcp_test_wp_sites'] ??= array(
     1 => (object) array('blog_id' => 1, 'blogname' => 'Primary Site', 'domain' => 'example.test', 'path' => '/', 'home' => 'https://example.test/'),
     2 => (object) array('blog_id' => 2, 'blogname' => 'Docs Site', 'domain' => 'docs.example.test', 'path' => '/', 'home' => 'https://docs.example.test/'),
@@ -170,6 +175,8 @@ if (!function_exists('codi_mcp_test_seed_default_runtime_fixtures')) {
                     'edit_theme_options' => true,
                     'upload_files' => true,
                     'manage_options' => true,
+                    'delete_plugins' => true,
+                    'delete_themes' => true,
                     'publish_pages' => true,
                     'publish_posts' => true,
                     'delete_pages' => true,
@@ -366,6 +373,7 @@ if (!function_exists('codi_mcp_test_reset_environment')) {
         $GLOBALS['codi_mcp_test_wp_valid_auth_cookie_user_id'] = 0;
         $existingUsers = is_array($GLOBALS['codi_mcp_test_wp_users'] ?? null) ? $GLOBALS['codi_mcp_test_wp_users'] : array();
         $GLOBALS['codi_mcp_test_wp_current_user_id'] = 0;
+        $GLOBALS['codi_mcp_test_wp_super_admins'] = array(7);
         $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 1;
         $GLOBALS['codi_mcp_test_wp_blog_stack'] = array();
         $GLOBALS['codi_mcp_test_wp_posts'] = array();
@@ -1179,6 +1187,16 @@ if (!function_exists('user_can')) {
     }
 }
 
+if (!function_exists('is_super_admin')) {
+    function is_super_admin($userId = false): bool
+    {
+        $resolved = false === $userId || null === $userId
+            ? (int) ($GLOBALS['codi_mcp_test_wp_current_user_id'] ?? 0)
+            : (int) $userId;
+        return in_array($resolved, (array) ($GLOBALS['codi_mcp_test_wp_super_admins'] ?? array()), true);
+    }
+}
+
 if (!function_exists('current_user_can')) {
     function current_user_can(string $capability, ...$args): bool
     {
@@ -1302,6 +1320,15 @@ if (!function_exists('get_option')) {
     {
         $GLOBALS['codi_mcp_test_wp_options'] ??= array();
         $siteId = function_exists('get_current_blog_id') ? get_current_blog_id() : 1;
+        $siteOptions = (array) ($GLOBALS['codi_mcp_test_wp_options'][$siteId] ?? array());
+        return array_key_exists($key, $siteOptions) ? $siteOptions[$key] : $default;
+    }
+}
+
+if (!function_exists('get_blog_option')) {
+    function get_blog_option(int $siteId, string $key, $default = false)
+    {
+        $GLOBALS['codi_mcp_test_wp_options'] ??= array();
         $siteOptions = (array) ($GLOBALS['codi_mcp_test_wp_options'][$siteId] ?? array());
         return array_key_exists($key, $siteOptions) ? $siteOptions[$key] : $default;
     }

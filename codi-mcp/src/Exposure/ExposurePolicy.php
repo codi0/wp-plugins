@@ -99,7 +99,11 @@ final class ExposurePolicy
     /** @param array<string,mixed> $descriptor */
     private function isEligible(array $descriptor): bool
     {
-        return !empty($descriptor['owned']) || !empty($descriptor['adoptable']);
+        if (($descriptor['namespace'] ?? '') === 'mcp-adapter') {
+            return false;
+        }
+
+        return !empty($descriptor['owned']) || !empty($descriptor['mcp_public']);
     }
 
     /** @return array<string,bool> */

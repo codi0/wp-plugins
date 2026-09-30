@@ -199,7 +199,7 @@ final class Package implements AbilityPackage
             $deleteAbility,
             [
                 'label' => 'Delete installed plugin',
-                'description' => 'Permanently uninstall and delete one exact inactive standard plugin through WordPress native plugin deletion. Codi MCP cannot delete itself. This ability is intentionally unavailable on multisite because plugin files are shared across sites.',
+                'description' => 'Permanently uninstall and delete one exact inactive standard plugin through WordPress native plugin deletion. Codi MCP cannot delete itself. On multisite, deletion requires a super administrator and is refused while the plugin is network-active or active on any site.',
                 'category' => $category,
                 'input_schema' => [
                     'type' => 'object',

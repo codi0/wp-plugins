@@ -30,7 +30,7 @@ namespace CodiMcpTest\Unit {
             }
         }
 
-        public function test_catalogue_distinguishes_owned_and_adoptable_abilities(): void
+        public function test_catalogue_reports_ownership_and_mcp_exposure_intent(): void
         {
             $this->register('codi/owned', AbilityMetadata::owned('test', true, false, true));
             $this->register('example/public', array('public' => true));
@@ -43,22 +43,30 @@ namespace CodiMcpTest\Unit {
             $owned = $catalogue->get('codi/owned');
             $this->assertSame('codi', (string) ($owned['origin'] ?? ''));
             $this->assertTrue((bool) ($owned['owned'] ?? false));
-            $this->assertFalse((bool) ($owned['adoptable'] ?? true));
+            $this->assertFalse((bool) ($owned['mcp_public'] ?? true));
 
             $public = $catalogue->get('example/public');
             $this->assertSame('external', (string) ($public['origin'] ?? ''));
-            $this->assertTrue((bool) ($public['adoptable'] ?? false));
+            $this->assertTrue((bool) ($public['mcp_public'] ?? false));
 
             $mcpPrivate = $catalogue->get('example/mcp-private');
             $this->assertFalse((bool) ($mcpPrivate['mcp_public'] ?? true));
-            $this->assertFalse((bool) ($mcpPrivate['adoptable'] ?? true));
 
             $mcpPublic = $catalogue->get('example/mcp-public');
             $this->assertTrue((bool) ($mcpPublic['mcp_public'] ?? false));
-            $this->assertTrue((bool) ($mcpPublic['adoptable'] ?? false));
 
             $private = $catalogue->get('example/private');
-            $this->assertFalse((bool) ($private['adoptable'] ?? true));
+            $this->assertFalse((bool) ($private['mcp_public'] ?? true));
+        }
+
+        public function test_owned_metadata_explicitly_opts_out_of_generic_exposure_channels(): void
+        {
+            $meta = AbilityMetadata::owned('test', true, false, true);
+
+            $this->assertSame(false, $meta['public'] ?? null);
+            $this->assertSame(false, $meta['show_in_rest'] ?? null);
+            $this->assertSame(false, $meta['mcp']['public'] ?? null);
+            $this->assertSame('tool', (string) ($meta['mcp']['type'] ?? ''));
         }
 
         public function test_policy_and_direct_presentation_only_use_eligible_selected_abilities(): void
@@ -66,21 +74,25 @@ namespace CodiMcpTest\Unit {
             $this->register('codi/owned', AbilityMetadata::owned('test', true, false, true));
             $this->register('example/public', array('public' => true));
             $this->register('example/private', array());
+            $this->register('mcp-adapter/execute-ability', array('public' => true));
 
             $catalogue = new AbilityCatalogue();
+            $this->assertTrue($catalogue->get('mcp-adapter/execute-ability') !== null);
+
             $policy = new ExposurePolicy($catalogue);
-            $this->assertTrue($policy->saveSelection(array('codi/owned', 'example/public', 'example/private')));
+            $this->assertTrue($policy->saveSelection(array('codi/owned', 'example/public', 'example/private', 'mcp-adapter/execute-ability')));
 
             $this->assertTrue($policy->isEnabled('codi/owned'));
             $this->assertTrue($policy->isEnabled('example/public'));
             $this->assertFalse($policy->isEnabled('example/private'));
+            $this->assertFalse($policy->isEnabled('mcp-adapter/execute-ability'));
             $this->assertSame(array('codi/owned', 'example/public'), $policy->enabledNames());
 
             $components = (new DirectMcpPresentation($catalogue, $policy))->components();
             $this->assertSame(array('codi/owned', 'example/public'), $components['tools']);
         }
 
-        public function test_adopted_mcp_observability_records_external_outcome_without_duplicate_owned_record(): void
+        public function test_external_mcp_observability_records_outcome_without_duplicate_owned_record(): void
         {
             $this->register('example/public', array('public' => true));
             $this->register('codi/owned', AbilityMetadata::owned('test', true, false, true));
