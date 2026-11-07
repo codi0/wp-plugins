@@ -5,9 +5,14 @@ declare(strict_types=1);
 namespace CodiMcp\Packages\Themes;
 
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
+use CodiMcp\Core\Downloads\DownloadCapabilityService;
 use CodiMcp\Core\Archives\ZipArchiveGuard;
 use CodiMcp\Core\Deployment\UpgraderResult;
+use CodiMcp\Core\Deployment\CorePackageInstaller;
+use CodiMcp\Core\Deployment\DeploymentRuntimeVerifier;
 use CodiMcp\Core\Deployment\NetworkAssetUsage;
+use CodiMcp\Core\Deployment\FolderReplacement;
+use CodiMcp\Core\Deployment\ReplacementSelection;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
 use CodiMcp\Core\Uploads\UploadStore;
 
@@ -18,11 +23,13 @@ final class ThemeDeployment
 
     private UploadCapabilityService $uploads;
     private ArtifactDownloadStore $downloads;
+    private FolderReplacement $folderReplacement;
 
-    public function __construct(private int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null)
+    public function __construct(private int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null)
     {
         $this->uploads = $uploads ?? new UploadCapabilityService(new UploadStore($maxZipBytes));
         $this->downloads = $downloads ?? new ArtifactDownloadStore($maxZipBytes, $downloadChunkBytes);
+        $this->folderReplacement = $folderReplacement ?? new FolderReplacement();
     }
 
     public function canInstallThemes(): bool
@@ -67,17 +74,36 @@ final class ThemeDeployment
             return $validation;
         }
 
+        $selection = ReplacementSelection::fromInput($input);
+        if ($selection instanceof \WP_Error) {
+            return $selection;
+        }
+        $metadata = array('stylesheet' => $stylesheet, 'filename' => $stylesheet . '.zip', 'replace' => $selection['replace']);
+        if ($selection['replace'] === 'folder') {
+            $target = $this->installedFolderTarget($stylesheet);
+            if ($target instanceof \WP_Error) {
+                return $target;
+            }
+            $captured = $this->folderReplacement->capture($target['root'], $selection['folder']);
+            if ($captured instanceof \WP_Error) {
+                return $captured;
+            }
+            $metadata['replacement'] = $captured;
+        }
+
         $result = $this->uploads->create(
             self::UPLOAD_PURPOSE,
             $size,
             $sha256,
             'application/zip',
-            array('stylesheet' => $stylesheet, 'filename' => $stylesheet . '.zip')
+            $metadata
         );
         if ($result instanceof \WP_Error) {
             return $result;
         }
-        $result['instruction'] = 'Stream the exact theme ZIP directly from the machine holding it to upload.url using HTTP PUT. Do not send theme bytes through MCP, base64, or the client/model workspace. After the PUT succeeds, pass upload_id to codi/theme-install.';
+        $result['replace'] = $selection['replace'];
+        $result['folder'] = $selection['folder'];
+        $result['instruction'] = 'PUT bytes directly to upload.url, then call codi/theme-install with upload_id. Choose the wrapped folder layout for folder replacement.';
         return $result;
     }
 
@@ -89,6 +115,66 @@ final class ThemeDeployment
         if ($upload instanceof \WP_Error) {
             return $upload;
         }
+        $metadata = (array) ($upload['meta']['metadata'] ?? array());
+        $stylesheet = (string) ($metadata['stylesheet'] ?? '');
+        if (!preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/D', $stylesheet)) {
+            return new \WP_Error('codi_mcp_bad_metadata', 'Upload theme identity is invalid.');
+        }
+        $root = rtrim((string) get_theme_root($stylesheet), '/\\') . '/' . $stylesheet;
+        $replacement = $this->folderReplacement;
+        return $replacement->locked($root, function () use ($replacement, $uploadId, $stylesheet) {
+            $upload = $this->uploads->complete($uploadId, self::UPLOAD_PURPOSE);
+            if ($upload instanceof \WP_Error) {
+                return $upload;
+            }
+            $metadata = (array) ($upload['meta']['metadata'] ?? array());
+            $mode = array_key_exists('replace', $metadata) ? $metadata['replace'] : 'entire';
+            if ($mode === 'entire') {
+                $result = $this->installEntire($upload, $uploadId);
+            } elseif ($mode === 'folder' && is_array($metadata['replacement'] ?? null)) {
+                $selection = $metadata['replacement'];
+                $target = $this->installedFolderTarget($stylesheet);
+                if ($target instanceof \WP_Error) {
+                    return $target;
+                }
+                $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
+                $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+                $result = $replacement->replace(
+                    $target['root'],
+                    $selection,
+                    (string) $upload['path'],
+                    $stylesheet,
+                    $uploadId,
+                    $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+                );
+                if ($result instanceof \WP_Error) {
+                    return $result;
+                }
+                if (function_exists('wp_clean_themes_cache')) {
+                    wp_clean_themes_cache(true);
+                }
+                $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
+                $theme = wp_get_theme($stylesheet);
+                $result = array(
+                    'action' => 'updated',
+                    'stylesheet' => $stylesheet,
+                    'name' => (string) $theme->get('Name'),
+                    'version' => (string) $theme->get('Version'),
+                    'active' => get_stylesheet() === $stylesheet,
+                );
+            } else {
+                return new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
+            }
+            if (is_array($result)) {
+                $result['replace'] = $mode;
+                $result['folder'] = $mode === 'folder' ? $metadata['replacement']['folder'] : '';
+            }
+            return $result;
+        });
+    }
+
+    private function installEntire(array $upload, string $uploadId)
+    {
         $metadata = is_array($upload['meta']['metadata'] ?? null) ? $upload['meta']['metadata'] : array();
         $stylesheet = (string) ($metadata['stylesheet'] ?? '');
         if ($stylesheet === '') {
@@ -110,10 +196,14 @@ final class ThemeDeployment
         $existed = isset($installedBefore[$stylesheet]);
         $skin = new \Automatic_Upgrader_Skin();
         $upgrader = new \Theme_Upgrader($skin);
+        $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
         $bufferLevel = ob_get_level();
         ob_start();
         try {
-            $result = $upgrader->install($installZipPath, array('overwrite_package' => true));
+            $result = (new CorePackageInstaller(
+                $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+            ))->install($upgrader, $installZipPath, 'theme', $stylesheet, get_theme_root($stylesheet), $siteIds !== array());
         } finally {
             while (ob_get_level() > $bufferLevel) {
                 ob_end_clean();
@@ -178,6 +268,13 @@ final class ThemeDeployment
     }
 
     public function delete($input)
+    {
+        $stylesheet = (string) (is_array($input) ? ($input['stylesheet'] ?? '') : '');
+        $root = rtrim((string) get_theme_root($stylesheet), '/\\') . '/' . $stylesheet;
+        return $this->folderReplacement->locked($root, fn () => $this->deleteUnlocked($input));
+    }
+
+    private function deleteUnlocked($input)
     {
         require_once ABSPATH . 'wp-admin/includes/file.php';
         require_once ABSPATH . 'wp-admin/includes/theme.php';
@@ -270,13 +367,31 @@ final class ThemeDeployment
                 return new \WP_Error('codi_mcp_download_metadata_mismatch', 'stylesheet must match the generated theme artifact.');
             }
         }
-        $chunk = $this->downloads->readBase64($downloadId, self::DOWNLOAD_PURPOSE, $offset);
+        $chunk = (new DownloadCapabilityService($this->downloads))->response($downloadId, self::DOWNLOAD_PURPOSE, $input);
         if ($chunk instanceof \WP_Error) {
             return $chunk;
         }
         unset($chunk['meta']);
         $chunk['stylesheet'] = $stylesheet;
         return $chunk;
+    }
+
+    private function installedFolderTarget(string $stylesheet): array|\WP_Error
+    {
+        if (!function_exists('get_filesystem_method')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+        $themes = (array) wp_get_themes(array('errors' => null, 'allowed' => null));
+        $theme = $themes[$stylesheet] ?? null;
+        if (!is_object($theme) || !method_exists($theme, 'get_stylesheet_directory')) {
+            return new \WP_Error('codi_mcp_theme_not_found', 'Folder replacement requires an installed theme.');
+        }
+        $root = (string) $theme->get_stylesheet_directory();
+        $expected = rtrim((string) get_theme_root($stylesheet), '/\\') . '/' . $stylesheet;
+        if (realpath($root) === false || realpath($root) !== realpath($expected)) {
+            return new \WP_Error('codi_mcp_theme_scope', 'Installed theme directory does not match its registered theme root.');
+        }
+        return array('root' => $root);
     }
 
     private function validateUploadDeclaration(string $stylesheet, int $size, string $sha256)

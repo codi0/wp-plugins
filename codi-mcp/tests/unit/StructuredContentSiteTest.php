@@ -3,6 +3,9 @@
 declare(strict_types=1);
 
 namespace {
+    if (!function_exists('wp_salt')) {
+        function wp_salt(string $scheme = 'auth'): string { return 'fixture-download-signing-secret'; }
+    }
     if (!function_exists('get_current_user_id')) {
         function get_current_user_id(): int { return (int) ($GLOBALS['codi_mcp_test_wp_current_user_id'] ?? 0); }
     }
@@ -220,7 +223,16 @@ namespace {
             $directory = (string) apply_filters('stylesheet_directory', $root . DIRECTORY_SEPARATOR . $stylesheet, $stylesheet, $root);
             $GLOBALS['codi_test_native_theme_exports'][] = array('stylesheet' => $stylesheet, 'directory' => $directory);
             $path = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'codi-native-theme-' . bin2hex(random_bytes(6)) . '.zip';
-            file_put_contents($path, json_encode(array('stylesheet' => $stylesheet, 'directory' => $directory), JSON_UNESCAPED_SLASHES));
+            $manifest = json_encode(array('stylesheet' => $stylesheet, 'directory' => $directory), JSON_UNESCAPED_SLASHES);
+            if (class_exists('ZipArchive')) {
+                $zip = new \ZipArchive();
+                $zip->open($path, \ZipArchive::CREATE);
+                $zip->addFromString('manifest.json', $manifest);
+                $zip->addFile($directory . DIRECTORY_SEPARATOR . 'style.css', 'style.css');
+                $zip->close();
+            } else {
+                file_put_contents($path, $manifest);
+            }
             return $path;
         }
     }
@@ -243,9 +255,13 @@ namespace CodiMcpTest\Unit {
 
     final class StructuredContentSiteTest extends TestCase
     {
+        protected function usesThemeFixtureFiles(): bool
+        {
+            return true;
+        }
+
         protected function setUp(): void
         {
-            \codi_mcp_test_reset_environment();
             $GLOBALS['codi_mcp_test_wp_current_user_id'] = 7;
             $GLOBALS['codi_mcp_test_wp_users'][7]['sites'][1] = array_merge(
                 (array) ($GLOBALS['codi_mcp_test_wp_users'][7]['sites'][1] ?? array()),
@@ -517,17 +533,38 @@ namespace CodiMcpTest\Unit {
             $downloads = new ArtifactDownloadStore(20 * 1024 * 1024, 256 * 1024, $downloadRoot);
             $manager = new ThemeDeployment(20 * 1024 * 1024, 256 * 1024, null, $downloads);
             $before = get_stylesheet();
-            $result = $manager->export(array('stylesheet' => 'allowed-theme', 'offset' => 0));
+            $result = $manager->export(array('stylesheet' => 'allowed-theme', 'transfer' => 'chunks', 'offset' => 0));
 
             $this->assertFalse(is_wp_error($result));
             $this->assertSame(true, (bool) ($result['complete'] ?? false));
-            $payload = json_decode((string) base64_decode((string) ($result['data'] ?? ''), true), true);
+            $bytes = (string) base64_decode((string) ($result['data'] ?? ''), true);
+            if (class_exists('ZipArchive')) {
+                $zipPath = $downloadRoot . DIRECTORY_SEPARATOR . 'verify.zip';
+                file_put_contents($zipPath, $bytes);
+                $zip = new \ZipArchive();
+                $zip->open($zipPath);
+                $bytes = (string) $zip->getFromName('manifest.json');
+                $zip->close();
+                unlink($zipPath);
+            }
+            $payload = json_decode($bytes, true);
             $this->assertSame('allowed-theme', (string) ($payload['stylesheet'] ?? ''));
             $this->assertSame((string) realpath($themeDir), (string) ($payload['directory'] ?? ''));
             $this->assertSame($before, get_stylesheet());
             $this->assertSame('allowed-theme', (string) ($GLOBALS['codi_test_native_theme_exports'][0]['stylesheet'] ?? ''));
             $this->assertSame(array(), array_values((array) ($GLOBALS['codi_mcp_test_filters']['stylesheet'] ?? array())));
             $this->assertSame(array(), array_values((array) ($GLOBALS['codi_mcp_test_filters']['template'] ?? array())));
+            $direct = $manager->export(['stylesheet' => 'allowed-theme']);
+            $this->assertFalse(is_wp_error($direct));
+            $this->assertArrayHasKey('download', $direct);
+            $this->assertFalse(isset($direct['data']));
+            $this->assertSame($before, get_stylesheet());
+            $renewed = $manager->export(['stylesheet' => 'allowed-theme', 'download_id' => $direct['download_id'], 'transfer' => 'url']);
+            $this->assertSame($direct['download_id'], $renewed['download_id']);
+            $continued = $manager->export(['stylesheet' => 'allowed-theme', 'download_id' => $direct['download_id'], 'transfer' => 'chunks', 'offset' => 0]);
+            $this->assertArrayHasKey('data', $continued);
+            $this->assertTrue(is_wp_error($manager->export(['stylesheet' => 'fixture-theme', 'download_id' => $direct['download_id'], 'transfer' => 'url'])));
+
         }
 
         public function test_theme_activation_respects_current_site_multisite_allowance(): void

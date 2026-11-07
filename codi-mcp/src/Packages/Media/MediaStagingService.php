@@ -55,7 +55,7 @@ final class MediaStagingService
         if ($result instanceof \WP_Error) {
             return $result;
         }
-        $result['instruction'] = 'Stream the exact media file directly from the machine holding it to upload.url using HTTP PUT. Do not send media bytes through MCP, base64, or the client/model workspace. After the PUT succeeds, pass upload_id as source_upload_id to codi/media-create or codi/media-update.';
+        $result['instruction'] = 'PUT bytes directly to upload.url, then call codi/media-create or codi/media-update with source_upload_id=upload_id.';
         return $result;
     }
 

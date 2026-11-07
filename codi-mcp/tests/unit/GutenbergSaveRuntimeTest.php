@@ -15,7 +15,6 @@ final class GutenbergSaveRuntimeTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         $GLOBALS['codi_mcp_test_wp_current_user_id'] = 7;
         $page = \get_post(101);
         if (is_object($page)) {

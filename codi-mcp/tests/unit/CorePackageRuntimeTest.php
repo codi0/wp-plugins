@@ -22,7 +22,6 @@ final class CorePackageRuntimeTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         foreach (array(
             'CODI_MCP_ABILITY_PREFIX' => 'codi',
             'CODI_MCP_SERVER_ID' => 'codi-mcp',
@@ -343,5 +342,50 @@ final class CorePackageRuntimeTest extends TestCase
 
         $this->assertFalse(current_user_can('read'));
         $this->assertTrue($server->transportPermission(null));
+    }
+
+    public function test_transport_authenticator_is_required_before_wordpress_session_authorization(): void
+    {
+        $catalogue = new AbilityCatalogue();
+        $policy = new ExposurePolicy($catalogue);
+        $denied = new CodiServer(
+            new DirectMcpPresentation($catalogue, $policy),
+            null,
+            null,
+            'Codi MCP',
+            'Test',
+            array(),
+            null,
+            static fn (): bool => false
+        );
+        wp_set_current_user(7);
+        $this->assertTrue(is_user_logged_in());
+        $this->assertFalse($denied->transportPermission(null));
+
+        $allowed = new CodiServer(
+            new DirectMcpPresentation($catalogue, $policy),
+            null,
+            null,
+            'Codi MCP',
+            'Test',
+            array(),
+            null,
+            static fn (): bool => true
+        );
+        $this->assertTrue($allowed->transportPermission(null));
+
+        $throwing = new CodiServer(
+            new DirectMcpPresentation($catalogue, $policy),
+            null,
+            null,
+            'Codi MCP',
+            'Test',
+            array(),
+            null,
+            static function (): bool {
+                throw new \RuntimeException('Authentication backend unavailable.');
+            }
+        );
+        $this->assertFalse($throwing->transportPermission(null));
     }
 }

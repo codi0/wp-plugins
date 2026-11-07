@@ -90,7 +90,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'terms-list',
             'List taxonomy terms',
-            'List bounded existing terms for one exact taxonomy so an AI can safely select term IDs without relying on Presentation or creating terms implicitly.',
+            'Find existing taxonomy terms and IDs before assigning terms to posts.',
             $this->termsListInputSchema(),
             $this->pagedOutputSchema($this->termListSchema()),
             [$this, 'termsList'],
@@ -99,7 +99,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'authors-list',
             'List assignable authors',
-            'List bounded site users who can author the selected registered post type. Returns only public/editorial identity fields and never email addresses or account secrets.',
+            'List users permitted to author the selected post type.',
             $this->authorsListInputSchema(),
             $this->pagedOutputSchema($this->authorSchema()),
             [$this, 'authorsList'],
@@ -108,7 +108,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'registered-blocks-list',
             'List registered block types',
-            'List registered Gutenberg block types, including API version, attributes, supports, dynamic render status, script/style handles, and bounded source attribution where reliably available.',
+            'List Gutenberg block types, attributes, supports, rendering mode, and source attribution.',
             $input,
             $this->pagedOutputSchema($this->blockSchema()),
             [$this, 'registeredBlocksList']
@@ -117,7 +117,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'registered-meta-list',
             'List registered metadata',
-            'List WordPress metadata keys registered for an object type/subtype, including type, REST visibility, sanitization/auth coverage, revision support, and bounded REST schema metadata. Values and callback implementations are never returned.',
+            'List registered metadata keys and REST schemas for an object type/subtype; excludes stored values.',
             $this->registeredMetaInputSchema(),
             $this->pagedOutputSchema($this->registeredMetaSchema()),
             [$this, 'registeredMetaList']
@@ -126,7 +126,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'posts-list',
             'List content entities',
-            'List bounded page, post, or custom-post-type entities for authoritative Content-owned lifecycle operations. Presentation remains responsible for block composition, not entity identity.',
+            'Find posts, pages, or custom post types by type/search. Use returned IDs with Content tools; Presentation edits body blocks.',
             $this->postsListInputSchema(),
             $this->postsListOutputSchema(),
             [$this, 'postsList'],
@@ -136,7 +136,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'registered-meta-get',
             'Read registered metadata value',
-            'Read one post or term metadata value only when the key is registered and explicitly exposed through WordPress REST metadata. Requires permission to edit that exact metadata key.',
+            'Read one registered, REST-exposed post or term metadata value.',
             $this->registeredMetaTargetInputSchema(),
             $this->registeredMetaValueSchema(),
             [$this, 'registeredMetaGet'],
@@ -147,18 +147,18 @@ final class Package implements AbilityPackage
         $this->registerMutation('term-update', 'Update taxonomy term', 'Update one exact existing taxonomy term using that taxonomy\'s edit_terms capability.', $this->termUpdateInputSchema(), $this->termSchema(), [$this, 'termUpdate'], [$this, 'canUpdateTerm'], true, true);
         $this->registerMutation('term-delete', 'Delete taxonomy term', 'Delete one exact existing taxonomy term using that taxonomy\'s delete_terms capability.', $this->termDeleteInputSchema(), $this->strictObject(array('taxonomy' => array('type' => 'string'), 'term_id' => array('type' => 'integer'), 'deleted' => array('type' => 'boolean'))), [$this, 'termDelete'], [$this, 'canDeleteTerm'], true, false);
         $this->registerMutation('post-terms-update', 'Update post taxonomy terms', 'Set, add, or remove existing term IDs for one post or custom-post-type object. This never creates terms implicitly and verifies the taxonomy is registered for the post type.', $this->postTermsInputSchema(), $this->postTermsOutputSchema(), [$this, 'postTermsUpdate'], [$this, 'canAssignTerms'], true, true);
-        $this->registerMutation('registered-meta-set', 'Set registered metadata', 'Set one post or term metadata field only when the key is registered and explicitly exposed through WordPress REST metadata. The JSON value is validated against the registered REST schema and WordPress sanitization/auth callbacks still apply.', $this->registeredMetaSetInputSchema(), $this->registeredMetaValueSchema(), [$this, 'registeredMetaSet'], [$this, 'canEditRegisteredMeta'], true, true);
-        $this->registerMutation('registered-meta-delete', 'Delete registered metadata', 'Delete one post or term metadata field only when the key is registered, REST-exposed, and the current user can edit that exact metadata key.', $this->registeredMetaTargetInputSchema(), $this->strictObject(array('object_type' => array('type' => 'string'), 'object_id' => array('type' => 'integer'), 'key' => array('type' => 'string'), 'deleted' => array('type' => 'boolean'))), [$this, 'registeredMetaDelete'], [$this, 'canEditRegisteredMeta'], true, true);
-        $this->registerMutation('post-author-set', 'Set post author', 'Assign an existing site user as author of one post or custom post type. Requires edit permission on the post, edit_others_posts when assigning another user, and that the target user can edit that post type.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1), 'author_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'author_id' => array('type' => 'integer'), 'updated' => array('type' => 'boolean'))), [$this, 'postAuthorSet'], [$this, 'canSetAuthor'], true, true);
-        $this->registerMutation('post-attributes-update', 'Update structured post attributes', 'Update only non-presentation core post attributes: hierarchy parent, menu order, excerpt, comment/ping status, and built-in post sticky state. This never changes title, slug, body/blocks, author, taxonomy terms, template, featured media, or publication status.', $this->postAttributesInputSchema(), $this->postAttributesOutputSchema(), [$this, 'postAttributesUpdate'], [$this, 'canUpdatePostAttributes'], true, true);
-        $this->registerMutation('post-create', 'Create content entity', 'Create one page, post, or registered custom-post-type entity as a draft with no body composition. Use Presentation for its block content after creation.', $this->postCreateInputSchema(), $this->postEntitySchema(), [$this, 'postCreate'], [$this, 'canCreatePost'], false, false);
-        $this->registerMutation('post-identity-update', 'Update content identity', 'Update only the canonical title and/or slug of one Content-owned post entity. Body blocks remain Presentation-owned.', $this->postIdentityInputSchema(), $this->postEntitySchema(), [$this, 'postIdentityUpdate'], [$this, 'canEditPost'], true, true);
-        $this->registerMutation('post-status-update', 'Update publication status', 'Set draft, pending, publish, private, or scheduled future state for one Content-owned post entity. Publish, private, and future states also require the post type publish capability. Future status requires publish_at.', $this->postStatusInputSchema(), $this->postEntitySchema(), [$this, 'postStatusUpdate'], [$this, 'canUpdatePostStatus'], true, true);
+        $this->registerMutation('registered-meta-set', 'Set registered metadata', 'Set one registered, REST-exposed post or term metadata value from JSON.', $this->registeredMetaSetInputSchema(), $this->registeredMetaValueSchema(), [$this, 'registeredMetaSet'], [$this, 'canEditRegisteredMeta'], true, true);
+        $this->registerMutation('registered-meta-delete', 'Delete registered metadata', 'Delete one registered, REST-exposed post or term metadata value.', $this->registeredMetaTargetInputSchema(), $this->strictObject(array('object_type' => array('type' => 'string'), 'object_id' => array('type' => 'integer'), 'key' => array('type' => 'string'), 'deleted' => array('type' => 'boolean'))), [$this, 'registeredMetaDelete'], [$this, 'canEditRegisteredMeta'], true, true);
+        $this->registerMutation('post-author-set', 'Set post author', 'Assign a permitted site user as a post/page author.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1), 'author_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'author_id' => array('type' => 'integer'), 'updated' => array('type' => 'boolean'))), [$this, 'postAuthorSet'], [$this, 'canSetAuthor'], true, true);
+        $this->registerMutation('post-attributes-update', 'Update structured post attributes', 'Update post parent, menu order, excerpt, comments/pings, or sticky status. Use Presentation for blocks and other Content tools for identity, status, author, or relationships.', $this->postAttributesInputSchema(), $this->postAttributesOutputSchema(), [$this, 'postAttributesUpdate'], [$this, 'canUpdatePostAttributes'], true, true);
+        $this->registerMutation('post-create', 'Create content entity', 'Create a draft post, page, or custom post type. Use Presentation to add block content.', $this->postCreateInputSchema(), $this->postEntitySchema(), [$this, 'postCreate'], [$this, 'canCreatePost'], false, false);
+        $this->registerMutation('post-identity-update', 'Update content identity', 'Update a post/page title or slug. Use Presentation for body blocks.', $this->postIdentityInputSchema(), $this->postEntitySchema(), [$this, 'postIdentityUpdate'], [$this, 'canEditPost'], true, true);
+        $this->registerMutation('post-status-update', 'Update publication status', 'Change post/page publication status. Scheduling future publication requires publish_at.', $this->postStatusInputSchema(), $this->postEntitySchema(), [$this, 'postStatusUpdate'], [$this, 'canUpdatePostStatus'], true, true);
         $this->registerMutation('post-featured-media-set', 'Set featured media', 'Set or clear the featured-media relationship owned by one post entity. attachment_id=0 clears it; nonzero IDs must identify an existing Media attachment.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1), 'attachment_id' => array('type' => 'integer', 'minimum' => 0))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'attachment_id' => array('type' => 'integer'), 'updated' => array('type' => 'boolean'))), [$this, 'postFeaturedMediaSet'], [$this, 'canEditPost'], true, true);
-        $this->registerMutation('post-duplicate', 'Duplicate content entity', 'Duplicate one Content-owned post entity as a draft, including its current body as an initial copy. Requires edit permission on the source and create permission for its post type. Further body composition belongs to Presentation.', $this->postDuplicateInputSchema(), $this->postEntitySchema(), [$this, 'postDuplicate'], [$this, 'canDuplicatePost'], false, false);
+        $this->registerMutation('post-duplicate', 'Duplicate content entity', 'Copy a post/page to a new draft, including its current body. Use Presentation for subsequent block edits.', $this->postDuplicateInputSchema(), $this->postEntitySchema(), [$this, 'postDuplicate'], [$this, 'canDuplicatePost'], false, false);
         $this->registerMutation('post-trash', 'Trash content entity', 'Move one Content-owned post entity to WordPress trash.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'trashed' => array('type' => 'boolean'))), [$this, 'postTrash'], [$this, 'canDeletePost'], true, true);
         $this->registerMutation('post-restore', 'Restore content entity', 'Restore one Content-owned post entity from WordPress trash.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->postEntitySchema(), [$this, 'postRestore'], [$this, 'canDeletePost'], true, true);
-        $this->registerMutation('post-delete', 'Delete content entity', 'Permanently delete one exact Content-owned post entity. This does not operate on Media attachments or Presentation-owned template/navigation/pattern records.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'deleted' => array('type' => 'boolean'))), [$this, 'postDelete'], [$this, 'canDeletePost'], true, false);
+        $this->registerMutation('post-delete', 'Delete content entity', 'Permanently delete a post/page. Use Media for attachments and Presentation for templates, patterns, or navigation.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'deleted' => array('type' => 'boolean'))), [$this, 'postDelete'], [$this, 'canDeletePost'], true, false);
     }
 
     public function postTypesList($input = array())

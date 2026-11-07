@@ -6,6 +6,9 @@ namespace CodiMcpTest\Unit;
 
 use CodiMcp\Admin\NetworkAdminPage;
 use CodiMcp\Auth\OAuthProfile;
+use CodiMcp\Auth\OAuthServer;
+use CodiMcp\Auth\OAuthStore;
+use CodiMcp\Audit\AuditLog;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\Abilities\AbilityCatalogue;
 use CodiMcp\Core\PackageAvailabilityPolicy;
@@ -19,7 +22,6 @@ final class PackageAvailabilityPolicyTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         $GLOBALS['codi_mcp_test_wp_multisite'] = true;
         $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 1;
     }
@@ -115,10 +117,12 @@ final class PackageAvailabilityPolicyTest extends TestCase
         $this->assertArrayHasKey('codi-mcp', (array) $GLOBALS['codi_mcp_test_admin_pages']);
         $this->assertSame('manage_options', (string) $GLOBALS['codi_mcp_test_admin_pages']['codi-mcp']['capability']);
 
+        $networkProfile = new OAuthProfile('codi-network', 'codi-mcp/v1/network', true);
         $page = new NetworkAdminPage(
             $policy,
             $packages,
-            new OAuthProfile('codi-network', 'codi-mcp/v1/network', true)
+            $networkProfile,
+            new OAuthServer(new OAuthStore(true), $networkProfile, new AuditLog())
         );
         $page->registerMenu();
         $this->assertArrayHasKey('codi-mcp-network', (array) $GLOBALS['codi_mcp_test_admin_pages']);

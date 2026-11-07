@@ -81,6 +81,25 @@ final class McpAuthenticator
         return $result;
     }
 
+    public function hasValidBearer($request): bool
+    {
+        if (!$this->isMcpRequest($request)) {
+            return false;
+        }
+        $token = $this->headers->bearerTokenFromRequest($request);
+        if ($token === '') {
+            $token = $this->headers->bearerToken();
+        }
+        if ($token === '') {
+            return false;
+        }
+        try {
+            return $this->server->userIdForBearerToken($token) !== null;
+        } catch (\Throwable) {
+            return false;
+        }
+    }
+
     public function postDispatch($response, $server = null, $request = null)
     {
         if (!$this->isMcpRequest($request) || !is_object($response) || !method_exists($response, 'get_status')) {

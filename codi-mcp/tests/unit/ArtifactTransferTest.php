@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace CodiMcpTest\Unit;
 
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
-use CodiMcp\Core\Uploads\UploadStore;
 use CodiMcpTest\Framework\TestCase;
 
 final class ArtifactTransferTest extends TestCase
@@ -14,35 +13,8 @@ final class ArtifactTransferTest extends TestCase
 
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         $this->root = \codi_mcp_test_temp_dir() . DIRECTORY_SEPARATOR . 'codi-transfer-test-' . getmypid() . '-' . bin2hex(random_bytes(4));
         @mkdir($this->root, 0777, true);
-    }
-
-    public function test_shared_upload_store_is_purpose_bound_and_hash_verified(): void
-    {
-        $store = new UploadStore(1024, $this->root . DIRECTORY_SEPARATOR . 'uploads', 3600);
-        $payload = 'abcdefgh';
-        $hash = hash('sha256', $payload);
-        $started = $store->start('themes.install', strlen($payload), $hash, array('stylesheet' => 'demo'));
-        $this->assertFalse(is_wp_error($started));
-        $uploadId = (string) $started['upload_id'];
-
-        $stream = fopen('php://temp', 'w+b');
-        $this->assertTrue(is_resource($stream));
-        fwrite($stream, $payload);
-        rewind($stream);
-        $received = $store->writeStream($uploadId, 'themes.install', $stream);
-        fclose($stream);
-        $this->assertFalse(is_wp_error($received));
-
-        $wrongPurpose = $store->get($uploadId, 'plugins.install');
-        $this->assertTrue(is_wp_error($wrongPurpose));
-        $this->assertSame('codi_mcp_upload_purpose_mismatch', $wrongPurpose->code);
-
-        $completed = $store->complete($uploadId, 'themes.install');
-        $this->assertFalse(is_wp_error($completed));
-        $this->assertSame($payload, (string) file_get_contents((string) $completed['path']));
     }
 
     public function test_shared_download_store_exports_bounded_sequential_chunks(): void

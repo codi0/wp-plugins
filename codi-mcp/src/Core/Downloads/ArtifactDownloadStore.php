@@ -261,7 +261,7 @@ final class ArtifactDownloadStore
             $this->removeDownloadFiles($paths);
             return new \WP_Error('codi_mcp_download_not_found', 'Download was not found or has expired.');
         }
-        return array('download_id' => $downloadId, 'path' => $paths['archive'], 'meta' => $decoded);
+        return array('download_id' => $downloadId, 'path' => $paths['archive'], 'meta' => $decoded, 'expires_at' => $decoded['created'] + $this->ttlSeconds);
     }
 
     public static function defaultRootDirectory(): string

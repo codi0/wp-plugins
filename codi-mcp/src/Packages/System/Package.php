@@ -63,7 +63,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'runtime-info',
             'Inspect site runtime',
-            'Return development-safe WordPress, PHP, database, multisite, debug, memory, upload, permalink, cache, and drop-in runtime information. Secrets and wp-config credentials are never returned.',
+            'Inspect WordPress, PHP, database, multisite, debug, memory, upload, permalink, and cache configuration.',
             $this->emptyInputSchema(),
             $this->runtimeOutputSchema(),
             [$this, 'runtimeInfo']
@@ -72,7 +72,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'rest-routes-list',
             'List REST API routes',
-            'List registered WordPress REST routes with namespace, supported HTTP methods, endpoint count, and permission-callback coverage.',
+            'List REST routes, namespaces, methods, and permission-callback coverage.',
             $this->pagedInputSchema(array(
                 'namespace' => array('type' => 'string', 'maxLength' => 100),
                 'search' => array('type' => 'string', 'maxLength' => 200),
@@ -108,7 +108,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'site-health',
             'Run Site Health checks',
-            'Run WordPress native Site Health tests and return structured critical, recommended, good, and informational results. When include_async=true, async tests that expose WordPress native direct callbacks are executed without scraping wp-admin or introducing a generic HTTP proxy.',
+            'Run Site Health checks. include_async also runs available native async-test callbacks.',
             array(
                 'type' => 'object',
                 'additionalProperties' => false,
@@ -125,7 +125,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'error-log-tail',
             'Read recent WordPress error log',
-            'Read a bounded tail of the configured WP_DEBUG_LOG. On multisite the log is network-shared and requires a super administrator. Only a WP_DEBUG_LOG file inside WP_CONTENT_DIR is eligible; caller-selected paths are not accepted, and credential-like values are redacted.',
+            'Read a redacted tail of WP_DEBUG_LOG. Multisite logs are network-shared and super-admin-only.',
             array(
                 'type' => 'object',
                 'additionalProperties' => false,
@@ -142,7 +142,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'cache-info',
             'Inspect object cache',
-            'Inspect WordPress object-cache state, drop-in presence, implementation class, and supported cache operations without exposing cache credentials.',
+            'Inspect object-cache implementation, status, and supported operations.',
             $this->emptyInputSchema(),
             $this->cacheInfoOutputSchema(),
             [$this, 'cacheInfo']
@@ -151,7 +151,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'roles-list',
             'List roles and capabilities',
-            'List registered WordPress roles and granted capabilities without returning any user records.',
+            'List WordPress roles and their granted capabilities.',
             $this->pagedInputSchema(array('search' => array('type' => 'string', 'maxLength' => 100))),
             $this->pagedOutputSchema($this->roleSchema()),
             [$this, 'rolesList']
@@ -160,7 +160,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'audit-log',
             'Read Codi MCP audit log',
-            'Return the bounded site-local audit trail for Codi MCP ability execution and OAuth authorization events. Audit records contain identifiers and input field names, never input values or credentials.',
+            'Read recent site-local ability execution and OAuth audit events.',
             array(
                 'type' => 'object',
                 'additionalProperties' => false,
@@ -223,7 +223,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'cache-flush',
             'Flush object cache',
-            'Flush the WordPress object cache. On multisite this requires a super administrator because persistent cache implementations may be shared across sites.',
+            'Flush the object cache. On multisite this may affect other sites and requires a super administrator.',
             $this->emptyInputSchema(),
             $this->strictObject(array('success' => array('type' => 'boolean'), 'external_object_cache' => array('type' => 'boolean'))),
             [$this, 'cacheFlush'],

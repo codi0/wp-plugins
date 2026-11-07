@@ -277,4 +277,25 @@ final class DatabaseQueryPolicyTest extends TestCase
         $this->assertSame('ordinary-value', $result['rows'][3]['meta_value']);
         $this->assertTrue($result['redacted_fields'] >= 3);
     }
+
+    public function test_sensitive_identifier_privacy_is_syntax_invariant(): void
+    {
+        $policy = new QueryPolicy();
+        foreach (array(
+            'SELECT api_secret FROM %i',
+            'SELECT `api_secret` FROM %i',
+            'SELECT t.api_secret AS value FROM %i AS t',
+            'SELECT t.`api_secret` AS `value` FROM %i AS t',
+            'SELECT value FROM (SELECT `api_secret` AS value FROM %i) AS derived_source',
+            'SELECT ACCESS_TOKEN FROM %i',
+            'SELECT `Access_Token` AS value FROM %i',
+        ) as $sql) {
+            $result = $policy->validate($sql, array('wp_options'));
+            $this->assertTrue($result instanceof \WP_Error, $sql . ' must retain the database privacy classification of its source identifier.');
+            $this->assertSame('codi_mcp_db_query_sensitive_identifier', $result->get_error_code());
+        }
+
+        $allowed = $policy->validate('SELECT ordinary_setting AS value FROM %i', array('wp_options'));
+        $this->assertFalse($allowed instanceof \WP_Error);
+    }
 }

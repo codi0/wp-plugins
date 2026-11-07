@@ -11,7 +11,6 @@ final class BootstrapPackageDiscoveryTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
     }
 
     public function test_bootstrap_discovers_all_package_entrypoints_deterministically(): void

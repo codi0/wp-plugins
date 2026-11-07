@@ -4,6 +4,8 @@ namespace CodiMcp\Packages\Plugins;
 
 use CodiMcp\Core\Abilities\AbilityMetadata;
 use CodiMcp\Core\AbilityPackage;
+use CodiMcp\Core\Deployment\ReplacementSelection;
+use CodiMcp\Core\Downloads\DownloadCapabilityService;
 
 final class Package implements AbilityPackage
 {
@@ -74,7 +76,7 @@ final class Package implements AbilityPackage
             $uploadAbility,
             [
                 'label'               => 'Create plugin upload',
-                'description'         => 'Create a temporary HTTPS PUT destination for a plugin ZIP. This tool never accepts plugin bytes. Use a file-source tool on the machine holding the ZIP to stream the exact file directly to the returned upload.url, then pass upload_id to ' . $installAbility . '.',
+                'description' => 'Create a one-time PUT URL for a plugin ZIP; stream bytes directly, then call plugin-install. Select entire replacement or one folder via replace/folder.',
                 'category'            => $category,
                 'input_schema'        => $this->uploadInputSchema(),
                 'output_schema'       => $this->uploadOutputSchema(),
@@ -88,10 +90,11 @@ final class Package implements AbilityPackage
             $installAbility,
             [
                 'label'               => 'Install uploaded plugin',
-                'description'         => 'Verify a completed upload and install or update the plugin in the WordPress plugins directory. If that plugin directory already exists, overwrite it using WordPress Plugin_Upgrader. This does not intentionally change activation state. Use the returned plugin_file with ' . $activateAbility . ' or ' . $deactivateAbility . '.',
+                'description' => 'Install an uploaded ZIP with its bound entire/folder selection. Activate separately with plugin-activate.',
                 'category'            => $category,
                 'input_schema'        => [
                     'type'       => 'object',
+                    'additionalProperties' => false,
                     'properties' => [
                         'upload_id' => [
                             'type'      => 'string',
@@ -112,6 +115,8 @@ final class Package implements AbilityPackage
                         'version'        => ['type' => 'string'],
                         'active'         => ['type' => 'boolean'],
                         'network_active' => ['type' => 'boolean'],
+                        'replace' => ['type' => 'string', 'enum' => ['entire', 'folder']],
+                        'folder' => ['type' => 'string'],
                     ],
                     'required' => ['action', 'plugin_slug', 'plugin_file', 'name', 'version', 'active', 'network_active'],
                 ],
@@ -125,7 +130,7 @@ final class Package implements AbilityPackage
             $activateAbility,
             [
                 'label'               => 'Activate plugin',
-                'description'         => 'Activate an installed plugin. Pass the exact plugin_file returned by ' . $installAbility . ' or WordPress, and choose site or network scope. Network scope is only valid on multisite.',
+                'description' => 'Activate a plugin at site or network scope using its exact plugin_file. Network scope requires multisite.',
                 'category'            => $category,
                 'input_schema'        => [
                     'type'       => 'object',
@@ -162,7 +167,7 @@ final class Package implements AbilityPackage
             $deactivateAbility,
             [
                 'label'               => 'Deactivate plugin',
-                'description'         => 'Deactivate an installed plugin at the requested site or network scope. Pass the exact plugin_file. A network-active plugin cannot be deactivated only for one site; use network scope.',
+                'description' => 'Deactivate a plugin at site or network scope; a network-active plugin requires network scope.',
                 'category'            => $category,
                 'input_schema'        => [
                     'type'       => 'object',
@@ -199,7 +204,7 @@ final class Package implements AbilityPackage
             $deleteAbility,
             [
                 'label' => 'Delete installed plugin',
-                'description' => 'Permanently uninstall and delete one exact inactive standard plugin through WordPress native plugin deletion. Codi MCP cannot delete itself. On multisite, deletion requires a super administrator and is refused while the plugin is network-active or active on any site.',
+                'description' => 'Uninstall and delete an inactive plugin. Multisite requires inactivity everywhere; refuses Codi MCP.',
                 'category' => $category,
                 'input_schema' => [
                     'type' => 'object',
@@ -260,7 +265,7 @@ final class Package implements AbilityPackage
             $exportAbility,
             [
                 'label' => 'Export installed plugin ZIP',
-                'description' => 'Package one exact directory-backed standard plugin as a bounded ZIP and return it in sequential base64 chunks. On the first call omit download_id and use offset 0; subsequent calls repeat plugin_file and pass download_id with the returned next_offset. Codi MCP cannot export itself.',
+                'description' => 'Export a directory-backed plugin ZIP via HTTPS download. Refuses Codi MCP; transfer=chunks explicitly selects sequential base64 reads.',
                 'category' => $category,
                 'input_schema' => [
                     'type' => 'object',
@@ -269,26 +274,11 @@ final class Package implements AbilityPackage
                         'plugin_file' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255],
                         'download_id' => ['type' => 'string', 'minLength' => 32, 'maxLength' => 32, 'pattern' => '^[a-f0-9]{32}$'],
                         'offset' => ['type' => 'integer', 'minimum' => 0],
+                        'transfer' => DownloadCapabilityService::transferSchema(),
                     ],
-                    'required' => ['plugin_file', 'offset'],
+                    'required' => ['plugin_file'],
                 ],
-                'output_schema' => [
-                    'type' => 'object',
-                    'additionalProperties' => false,
-                    'properties' => [
-                        'download_id' => ['type' => 'string'],
-                        'plugin_file' => ['type' => 'string'],
-                        'filename' => ['type' => 'string'],
-                        'size' => ['type' => 'integer'],
-                        'sha256' => ['type' => 'string'],
-                        'offset' => ['type' => 'integer'],
-                        'next_offset' => ['type' => 'integer'],
-                        'chunk_size' => ['type' => 'integer'],
-                        'data' => ['type' => 'string'],
-                        'complete' => ['type' => 'boolean'],
-                    ],
-                    'required' => ['download_id', 'plugin_file', 'filename', 'size', 'sha256', 'offset', 'next_offset', 'chunk_size', 'data', 'complete'],
-                ],
+                'output_schema' => DownloadCapabilityService::outputSchema('plugin_file'),
                 'execute_callback' => [$this, 'export'],
                 'permission_callback' => [$this, 'canExportPlugins'],
                 'meta' => $this->abilityMeta(false, false),
@@ -377,7 +367,7 @@ final class Package implements AbilityPackage
         return [
             'type' => 'object',
             'additionalProperties' => false,
-            'properties' => [
+            'properties' => ReplacementSelection::schemaProperties() + [
                 'plugin_slug' => [
                     'type' => 'string',
                     'minLength' => 1,
@@ -407,6 +397,8 @@ final class Package implements AbilityPackage
             'additionalProperties' => false,
             'properties' => [
                 'upload_id' => ['type' => 'string'],
+                'replace' => ['type' => 'string', 'enum' => ['entire', 'folder']],
+                'folder' => ['type' => 'string'],
                 'complete' => ['type' => 'boolean'],
                 'upload' => [
                     'type' => 'object',

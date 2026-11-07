@@ -3,9 +3,14 @@
 namespace CodiMcp\Packages\Plugins;
 
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
+use CodiMcp\Core\Downloads\DownloadCapabilityService;
 use CodiMcp\Core\Archives\ZipArchiveGuard;
 use CodiMcp\Core\Deployment\UpgraderResult;
+use CodiMcp\Core\Deployment\CorePackageInstaller;
+use CodiMcp\Core\Deployment\DeploymentRuntimeVerifier;
 use CodiMcp\Core\Deployment\NetworkAssetUsage;
+use CodiMcp\Core\Deployment\FolderReplacement;
+use CodiMcp\Core\Deployment\ReplacementSelection;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
 use CodiMcp\Core\Uploads\UploadStore;
 
@@ -17,12 +22,14 @@ final class PluginDeployment
     private int $maxZipBytes;
     private UploadCapabilityService $uploads;
     private ArtifactDownloadStore $downloads;
+    private FolderReplacement $folderReplacement;
 
-    public function __construct(int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null)
+    public function __construct(int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null)
     {
         $this->maxZipBytes = $maxZipBytes;
         $this->uploads = $uploads ?? new UploadCapabilityService(new UploadStore($maxZipBytes));
         $this->downloads = $downloads ?? new ArtifactDownloadStore($maxZipBytes, $downloadChunkBytes);
+        $this->folderReplacement = $folderReplacement ?? new FolderReplacement();
     }
 
     public function canInstallPlugins(): bool
@@ -81,29 +88,105 @@ final class PluginDeployment
             return $validation;
         }
 
+        $selection = ReplacementSelection::fromInput($input);
+        if ($selection instanceof \WP_Error) {
+            return $selection;
+        }
+        $metadata = array('expected_plugin_slug' => $pluginSlug, 'replace' => $selection['replace']);
+        if ($selection['replace'] === 'folder') {
+            $target = $this->installedFolderTarget($pluginSlug, $selection['folder']);
+            if ($target instanceof \WP_Error) {
+                return $target;
+            }
+            $captured = $this->folderReplacement->capture($target['root'], $selection['folder']);
+            if ($captured instanceof \WP_Error) {
+                return $captured;
+            }
+            $metadata['replacement'] = $captured;
+        }
+
         $result = $this->uploads->create(
             self::UPLOAD_PURPOSE,
             $size,
             $sha256,
             'application/zip',
-            array('expected_plugin_slug' => $pluginSlug)
+            $metadata
         );
         if ($result instanceof \WP_Error) {
             return $result;
         }
-        $result['instruction'] = 'Stream the exact plugin ZIP directly from the machine holding it to upload.url using HTTP PUT. Do not send plugin bytes through MCP, base64, or the client/model workspace. After the PUT succeeds, pass upload_id to codi/plugin-install.';
+        $result['replace'] = $selection['replace'];
+        $result['folder'] = $selection['folder'];
+        $result['instruction'] = 'PUT bytes directly to upload.url, then call codi/plugin-install with upload_id. Choose the wrapped folder layout for folder replacement.';
         return $result;
     }
 
     public function install($input)
     {
-        $input = is_array($input) ? $input : [];
-        $uploadId = isset($input['upload_id']) ? (string) $input['upload_id'] : '';
+        $input = is_array($input) ? $input : array();
+        $uploadId = (string) ($input['upload_id'] ?? '');
         $upload = $this->uploads->complete($uploadId, self::UPLOAD_PURPOSE);
         if ($upload instanceof \WP_Error) {
             return $upload;
         }
+        $metadata = (array) ($upload['meta']['metadata'] ?? array());
+        $slug = (string) ($metadata['expected_plugin_slug'] ?? '');
+        if (!preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/D', $slug)) {
+            return new \WP_Error('codi_mcp_bad_metadata', 'Upload plugin identity is invalid.');
+        }
+        $replacement = $this->folderReplacement;
+        return $replacement->locked(WP_PLUGIN_DIR . '/' . $slug, function () use ($replacement, $uploadId, $slug) {
+            $upload = $this->uploads->complete($uploadId, self::UPLOAD_PURPOSE);
+            if ($upload instanceof \WP_Error) {
+                return $upload;
+            }
+            $metadata = (array) ($upload['meta']['metadata'] ?? array());
+            $mode = array_key_exists('replace', $metadata) ? $metadata['replace'] : 'entire';
+            if ($mode === 'entire') {
+                $result = $this->installEntire($upload, $uploadId);
+            } elseif ($mode === 'folder' && is_array($metadata['replacement'] ?? null)) {
+                $selection = $metadata['replacement'];
+                $package = $this->installedFolderTarget($slug, (string) ($selection['folder'] ?? ''));
+                if ($package instanceof \WP_Error) {
+                    return $package;
+                }
+                $siteIds = (new NetworkAssetUsage())->pluginActiveSiteIds((string) $package['plugin_file']);
+                $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+                $result = $replacement->replace(
+                    $package['root'],
+                    $selection,
+                    (string) $upload['path'],
+                    $slug,
+                    $uploadId,
+                    $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+                );
+                if ($result instanceof \WP_Error) {
+                    return $result;
+                }
+                wp_clean_plugins_cache(true);
+                $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
+                $result = array(
+                    'action' => 'updated',
+                    'plugin_slug' => $slug,
+                    'plugin_file' => $package['plugin_file'],
+                    'name' => $package['name'],
+                    'version' => $package['version'],
+                    'active' => is_plugin_active($package['plugin_file']),
+                    'network_active' => is_multisite() && is_plugin_active_for_network($package['plugin_file']),
+                );
+            } else {
+                return new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
+            }
+            if (is_array($result)) {
+                $result['replace'] = $mode;
+                $result['folder'] = $mode === 'folder' ? $metadata['replacement']['folder'] : '';
+            }
+            return $result;
+        });
+    }
 
+    private function installEntire(array $upload, string $uploadId)
+    {
         $metadata = is_array($upload['meta']['metadata'] ?? null) ? $upload['meta']['metadata'] : array();
         $zipPath = (string) ($upload['path'] ?? '');
         $expectedSlug = strtolower(trim((string) ($metadata['expected_plugin_slug'] ?? '')));
@@ -119,10 +202,14 @@ final class PluginDeployment
         $pluginDirExisted = is_dir(WP_PLUGIN_DIR . '/' . $pluginSlug);
         $skin = new \Automatic_Upgrader_Skin();
         $upgrader = new \Plugin_Upgrader($skin);
+        $siteIds = (new NetworkAssetUsage())->pluginActiveSiteIds((string) $package['plugin_file']);
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
         $bufferLevel = ob_get_level();
         ob_start();
         try {
-            $result = $upgrader->install($zipPath, ['overwrite_package' => true]);
+            $result = (new CorePackageInstaller(
+                $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+            ))->install($upgrader, $zipPath, 'plugin', $pluginSlug, WP_PLUGIN_DIR, $siteIds !== array());
         } finally {
             while (ob_get_level() > $bufferLevel) {
                 ob_end_clean();
@@ -263,7 +350,7 @@ final class PluginDeployment
             }
         }
 
-        $chunk = $this->downloads->readBase64($downloadId, self::DOWNLOAD_PURPOSE, $offset);
+        $chunk = (new DownloadCapabilityService($this->downloads))->response($downloadId, self::DOWNLOAD_PURPOSE, $input);
         if ($chunk instanceof \WP_Error) {
             return $chunk;
         }
@@ -273,6 +360,16 @@ final class PluginDeployment
     }
 
     public function delete($input)
+    {
+        if (!function_exists('plugin_basename')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        $file = plugin_basename((string) (is_array($input) ? ($input['plugin_file'] ?? '') : ''));
+        $root = WP_PLUGIN_DIR . '/' . (str_contains($file, '/') ? explode('/', $file)[0] : $file);
+        return $this->folderReplacement->locked($root, fn () => $this->deleteUnlocked($input));
+    }
+
+    private function deleteUnlocked($input)
     {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
         require_once ABSPATH . 'wp-admin/includes/file.php';
@@ -305,6 +402,42 @@ final class PluginDeployment
 
         wp_clean_plugins_cache(true);
         return ['plugin_file' => $pluginFile, 'deleted' => true];
+    }
+
+    /** Package policy stays here; Core only receives an already resolved root. */
+    private function installedFolderTarget(string $slug, string $folder): array|\WP_Error
+    {
+        if (!ReplacementSelection::validFolder($folder)) {
+            return new \WP_Error('codi_mcp_bad_replacement', 'Select one relative folder with an existing parent directory.');
+        }
+        if (defined('CODI_MCP_PLUGIN_BASENAME') && dirname(CODI_MCP_PLUGIN_BASENAME) === $slug) {
+            return new \WP_Error('codi_mcp_self_replace', 'Codi MCP cannot replace its own folders.');
+        }
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (!function_exists('get_filesystem_method')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+        $plugins = get_plugins();
+        ksort($plugins, SORT_STRING);
+        $selected = null;
+        foreach ($plugins as $file => $data) {
+            if (!str_starts_with($file, $slug . '/')) {
+                continue;
+            }
+            $relative = substr($file, strlen($slug) + 1);
+            if (str_starts_with($relative, $folder . '/')) {
+                return new \WP_Error('codi_mcp_plugin_entrypoint', 'A replacement folder cannot contain an installed plugin entry point.');
+            }
+            $selected ??= array(
+                'root' => WP_PLUGIN_DIR . '/' . $slug,
+                'plugin_file' => $file,
+                'name' => (string) ($data['Name'] ?? ''),
+                'version' => (string) ($data['Version'] ?? ''),
+            );
+        }
+        return $selected ?? new \WP_Error('codi_mcp_plugin_not_found', 'Folder replacement requires an installed directory-backed plugin.');
     }
 
     private function validateUploadDescriptor(string $pluginSlug, int $size, string $sha256)

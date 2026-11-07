@@ -398,7 +398,6 @@ if (!function_exists('codi_mcp_test_reset_environment')) {
         $GLOBALS['codi_mcp_test_network_admin_pages'] = array();
         unset($_SERVER['HTTP_AUTHORIZATION'], $_SERVER['PHP_AUTH_USER']);
         $GLOBALS['codi_mcp_test_wp_theme_root'] = codi_mcp_test_default_theme_fixture_root();
-        codi_mcp_test_reset_theme_fixture_files();
         codi_mcp_test_seed_default_runtime_fixtures();
         if (function_exists('codi_mcp_presentation_reset_test_doubles')) {
             codi_mcp_presentation_reset_test_doubles();
@@ -502,6 +501,19 @@ if (!function_exists('add_action')) {
             'priority' => $priority,
             'accepted_args' => $acceptedArgs,
         );
+    }
+}
+
+if (!function_exists('remove_action')) {
+    function remove_action(string $hook, $callback, int $priority = 10): bool
+    {
+        foreach ((array) ($GLOBALS['codi_mcp_test_actions'][$hook] ?? []) as $index => $registration) {
+            if ($registration['callback'] === $callback && $registration['priority'] === $priority) {
+                unset($GLOBALS['codi_mcp_test_actions'][$hook][$index]);
+                return true;
+            }
+        }
+        return false;
     }
 }
 
@@ -1018,6 +1030,13 @@ if (!function_exists('wp_validate_auth_cookie')) {
     }
 }
 
+if (!function_exists('wp_salt')) {
+    function wp_salt(string $scheme = 'auth'): string
+    {
+        return 'codi-mcp-test-salt|' . $scheme;
+    }
+}
+
 if (!function_exists('wp_create_nonce')) {
     function wp_create_nonce(string $action = '-1'): string
     {
@@ -1169,6 +1188,22 @@ if (!function_exists('wp_get_current_user')) {
             'user_login' => $user['user_login'] ?? ('user-' . $userId),
             'display_name' => $user['display_name'] ?? ('User ' . $userId),
         );
+    }
+}
+
+if (!function_exists('get_userdata')) {
+    function get_userdata(int $userId): object|false
+    {
+        $user = $GLOBALS['codi_mcp_test_wp_users'][$userId] ?? null;
+        return is_array($user) ? (object) array('ID' => $userId, 'user_login' => (string) ($user['user_login'] ?? '')) : false;
+    }
+}
+
+if (!function_exists('is_user_member_of_blog')) {
+    function is_user_member_of_blog(int $userId, int $siteId = 0): bool
+    {
+        $siteId = $siteId > 0 ? $siteId : get_current_blog_id();
+        return isset($GLOBALS['codi_mcp_test_wp_users'][$userId]['sites'][$siteId]);
     }
 }
 

@@ -44,7 +44,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-help',
             'Presentation help',
-            'Describe Presentation ownership boundaries, workflow, safe mutation catalogue, and intentionally unsupported classic/source-level presentation paths.',
+            'Read the block-editing workflow, supported operations, and limitations.',
             $this->emptySchema(),
             $this->helpOutputSchema(),
             fn () => $this->manager()->help(),
@@ -53,7 +53,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-find',
             'Find presentation surfaces',
-            'Find WordPress-managed presentation/composition surfaces by route, search text, post type, or Presentation kind. Returns stable Presentation refs; it is not an alternate Content/Media/Site discovery API.',
+            'Find posts/pages, templates/parts, patterns, navigation, or Global Styles by route, search, or kind; returns refs.',
             $this->findInputSchema(),
             $this->findOutputSchema(),
             fn ($input = array()) => $this->manager()->find(is_array($input) ? $input : array()),
@@ -62,7 +62,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-inspect',
             'Inspect presentation state',
-            'Inspect the exact native WordPress composition/presentation state behind one Presentation ref, including Gutenberg structure, native template/global-style state, and presentation dependencies.',
+            'Read a page, template, pattern, navigation, or style target and its block paths. Use a ref from presentation-find.',
             $this->strictObject(array('ref' => $this->refSchema())),
             $this->inspectOutputSchema(),
             fn ($input = array()) => $this->manager()->inspect(is_array($input) ? $input : array()),
@@ -71,7 +71,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'presentation-preview',
             'Preview presentation mutation',
-            'Construct an immutable proposed Presentation change without writing WordPress. Static Gutenberg blocks are fail-closed: no generic attribute setter exists, and unsupported block internals require an explicit block-specific codec.',
+            'Preview changes to page/post blocks, text, headings, buttons, images, navigation, templates/parts, or Global Styles. Returns preview_id; apply with presentation-commit.',
             $this->previewInputSchema(),
             $this->previewOutputSchema(),
             fn ($input = array()) => $this->manager()->preview(is_array($input) ? $input : array()),
@@ -82,7 +82,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-verify',
             'Verify presentation state',
-            'Verify either current native Presentation state or a proposed preview. Preview verification includes freshness, Gutenberg structural safety, registered-block checks, and presentation dependencies.',
+            'Check a target or preview for freshness, valid Gutenberg blocks, and required dependencies.',
             $this->verifyInputSchema(),
             $this->verifyOutputSchema(),
             fn ($input = array()) => $this->manager()->verify(is_array($input) ? $input : array()),
@@ -91,7 +91,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'presentation-commit',
             'Commit presentation preview',
-            'Apply one previously reviewed Presentation preview only if its native base state is unchanged. Commit writes the proposed native WordPress state and records a rollback snapshot.',
+            'Apply a preview_id if its base state is unchanged; records a rollback snapshot.',
             $this->strictObject(array('preview_id' => $this->previewIdSchema())),
             $this->commitOutputSchema(),
             fn ($input = array()) => $this->manager()->commit(is_array($input) ? $input : array()),
@@ -102,7 +102,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-history',
             'Presentation history',
-            'List bounded Presentation transaction summaries. History stores operational rollback snapshots only; it is not a frontend presentation source of truth.',
+            'List recent Presentation edits and transaction IDs for rollback.',
             $this->historyInputSchema(),
             $this->historyOutputSchema(),
             fn ($input = array()) => $this->manager()->history(is_array($input) ? $input : array()),
@@ -111,7 +111,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'presentation-rollback',
             'Rollback presentation transaction',
-            'Preview or apply reversal of one committed Presentation transaction, refusing rollback when the native target has diverged since that transaction.',
+            'Preview or apply reversal of a Presentation transaction; refuses if the target has since changed.',
             $this->rollbackInputSchema(),
             $this->rollbackOutputSchema(),
             fn ($input = array()) => $this->manager()->rollback(is_array($input) ? $input : array()),

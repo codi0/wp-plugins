@@ -53,6 +53,11 @@ final class OAuthProfile
         return $this->restUrl($this->oauthNamespace . '/oauth/register');
     }
 
+    public function revocationEndpoint(): string
+    {
+        return $this->restUrl($this->oauthNamespace . '/oauth/revoke');
+    }
+
     public function authorizationServerMetadataPath(): string
     {
         $issuerPath = trim((string) parse_url($this->issuer(), PHP_URL_PATH), '/');
@@ -105,9 +110,11 @@ final class OAuthProfile
             'authorization_endpoint' => $this->authorizationEndpoint(),
             'token_endpoint' => $this->tokenEndpoint(),
             'registration_endpoint' => $this->registrationEndpoint(),
+            'revocation_endpoint' => $this->revocationEndpoint(),
             'response_types_supported' => ['code'],
             'grant_types_supported' => ['authorization_code', 'refresh_token'],
             'token_endpoint_auth_methods_supported' => ['none'],
+            'revocation_endpoint_auth_methods_supported' => ['none'],
             'code_challenge_methods_supported' => ['S256'],
             'authorization_response_iss_parameter_supported' => true,
             'scopes_supported' => $this->scopes(),

@@ -51,7 +51,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'db-tables',
             'List database tables',
-            'List tables visible to the WordPress database connection with prefix relationship, approximate row count, storage engine, collation, and size metadata. Multisite access requires a super administrator.',
+            'List accessible database tables, scope, approximate row counts, and storage sizes.',
             $this->tablesInputSchema(),
             $this->tablesOutputSchema(),
             [$this, 'tables']
@@ -60,7 +60,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'db-schema',
             'Inspect database table schema',
-            'Inspect columns, primary keys, and indexes for one existing database table. This reads schema metadata only and never returns table row data.',
+            'Inspect one table\'s columns, keys, and indexes; returns no row data.',
             $this->schemaInputSchema(),
             $this->schemaOutputSchema(),
             [$this, 'schema']
@@ -69,7 +69,7 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'db-query',
             'Run bounded read-only database query',
-            'Run one SELECT or EXPLAIN SELECT query. Values must use unquoted %s, %d, or %f placeholders and direct table names must use %i, all with matching params. Comments, embedded quoted/numeric literals, implicit comma joins, writes, locking clauses, unknown or dangerous functions, system schemas, protected credential fields, and tables outside the current-site/shared WordPress scope are rejected. Results are row/byte bounded and credential-like values are redacted.',
+            'Run read-only SELECT or EXPLAIN SELECT. Parameterize values with unquoted %s/%d/%f and table names with %i using matching params. No literals, comments, writes, locks, or cross-site/protected data.',
             $this->queryInputSchema(),
             $this->queryOutputSchema(),
             [$this, 'query']

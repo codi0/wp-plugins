@@ -6,6 +6,8 @@ namespace CodiMcp\Packages\Themes;
 
 use CodiMcp\Core\Abilities\AbilityMetadata;
 use CodiMcp\Core\AbilityPackage;
+use CodiMcp\Core\Deployment\ReplacementSelection;
+use CodiMcp\Core\Downloads\DownloadCapabilityService;
 
 final class Package implements AbilityPackage
 {
@@ -47,10 +49,10 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-upload',
             'Create theme upload',
-            'Create a temporary HTTPS PUT destination for a theme ZIP. This tool never accepts theme bytes. Use a file-source tool on the machine holding the ZIP to stream the exact file directly to the returned upload.url, then pass upload_id to codi/theme-install.',
+            'Create a one-time PUT URL for a theme ZIP; stream bytes directly, then call theme-install. Select entire replacement or one folder via replace/folder.',
             array(
                 'type' => 'object', 'additionalProperties' => false,
-                'properties' => array(
+                'properties' => ReplacementSelection::schemaProperties() + array(
                     'stylesheet' => ThemeInspection::stylesheetSchema(),
                     'size' => array('type' => 'integer', 'minimum' => 1, 'maximum' => self::MAX_ZIP_BYTES),
                     'sha256' => array('type' => 'string', 'minLength' => 64, 'maxLength' => 64, 'pattern' => '^[A-Fa-f0-9]{64}$'),
@@ -64,10 +66,11 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-install',
             'Install uploaded theme',
-            'Verify a completed staged ZIP and install or overwrite the matching installed theme through WordPress Theme_Upgrader. This is the supplied-ZIP update path and does not intentionally change the active theme.',
+            'Install an uploaded ZIP with its bound entire/folder selection. Does not switch the active theme.',
             $this->strictObject(array('upload_id' => $this->idSchema())),
             $this->strictObject(array(
                 'action' => array('type' => 'string', 'enum' => array('installed', 'updated')),
+                'replace' => array('type' => 'string', 'enum' => array('entire', 'folder')), 'folder' => array('type' => 'string'),
                 'stylesheet' => array('type' => 'string'), 'name' => array('type' => 'string'), 'version' => array('type' => 'string'), 'active' => array('type' => 'boolean'),
             )),
             [$this, 'install'], [$this, 'canInstallThemes'], true, false
@@ -76,7 +79,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-activate',
             'Activate installed theme',
-            'Activate one exact installed theme. On multisite the theme must already be enabled for the current site; this ability never changes network theme allowance.',
+            'Switch to an installed theme already allowed on this site.',
             $this->strictObject(array('stylesheet' => ThemeInspection::stylesheetSchema())),
             $this->strictObject(array('stylesheet' => array('type' => 'string'), 'name' => array('type' => 'string'), 'active' => array('type' => 'boolean'), 'changed' => array('type' => 'boolean'))),
             [$this, 'activate'], [$this, 'canActivateThemes'], true, true
@@ -85,7 +88,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-delete',
             'Delete installed theme',
-            'Permanently delete one exact inactive theme through WordPress native theme deletion. On multisite, deletion requires a super administrator and is refused while that theme or any child theme using it as a parent is active on any site.',
+            'Delete an inactive theme; refuses if it or a child theme is active anywhere.',
             $this->strictObject(array('stylesheet' => ThemeInspection::stylesheetSchema())),
             $this->strictObject(array('stylesheet' => array('type' => 'string'), 'deleted' => array('type' => 'boolean'))),
             [$this, 'delete'], [$this, 'canDeleteThemes'], true, false
@@ -97,13 +100,13 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-export',
             'Export installed theme ZIP',
-            'Export one exact installed theme as a bounded ZIP and return it in sequential base64 chunks. Block themes use the WordPress native Site Editor exporter so database-backed templates, template parts, and Global Styles are baked into the artifact; inactive themes are exported through a request-local virtual theme context without activation. Classic themes use whole-directory export. On subsequent calls repeat stylesheet and pass download_id with next_offset.',
+            'Export a theme ZIP via HTTPS download. Block themes include saved templates and Global Styles. transfer=chunks explicitly selects sequential base64 reads.',
             array(
                 'type' => 'object', 'additionalProperties' => false,
-                'properties' => array('stylesheet' => ThemeInspection::stylesheetSchema(), 'download_id' => $this->idSchema(), 'offset' => array('type' => 'integer', 'minimum' => 0)),
-                'required' => array('stylesheet', 'offset'),
+                'properties' => array('stylesheet' => ThemeInspection::stylesheetSchema(), 'download_id' => $this->idSchema(), 'offset' => array('type' => 'integer', 'minimum' => 0), 'transfer' => DownloadCapabilityService::transferSchema()),
+                'required' => array('stylesheet'),
             ),
-            $this->exportOutputSchema('stylesheet'),
+            DownloadCapabilityService::outputSchema('stylesheet'),
             [$this, 'export'], [$this, 'canExportThemes'], false, false
         );
     }
@@ -154,6 +157,8 @@ final class Package implements AbilityPackage
         return $this->strictObject(array(
             'upload_id' => array('type' => 'string'),
             'complete' => array('type' => 'boolean'),
+            'replace' => array('type' => 'string', 'enum' => array('entire', 'folder')),
+            'folder' => array('type' => 'string'),
             'upload' => $this->strictObject(array(
                 'method' => array('type' => 'string', 'enum' => array('PUT')),
                 'url' => array('type' => 'string'),
@@ -166,12 +171,4 @@ final class Package implements AbilityPackage
         ));
     }
 
-    private function exportOutputSchema(string $identityField): array
-    {
-        return $this->strictObject(array(
-            'download_id' => array('type' => 'string'), $identityField => array('type' => 'string'), 'filename' => array('type' => 'string'),
-            'size' => array('type' => 'integer'), 'sha256' => array('type' => 'string'), 'offset' => array('type' => 'integer'), 'next_offset' => array('type' => 'integer'),
-            'chunk_size' => array('type' => 'integer'), 'data' => array('type' => 'string'), 'complete' => array('type' => 'boolean'),
-        ));
-    }
 }

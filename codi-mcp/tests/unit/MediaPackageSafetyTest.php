@@ -135,8 +135,7 @@ namespace CodiMcpTest\Unit {
     {
         protected function setUp(): void
         {
-            \codi_mcp_test_reset_environment();
-            $GLOBALS['codi_mcp_test_wp_current_user_id'] = 7;
+                $GLOBALS['codi_mcp_test_wp_current_user_id'] = 7;
             if (!defined('CODI_MCP_ABILITY_PREFIX')) {
                 define('CODI_MCP_ABILITY_PREFIX', 'codi');
             }

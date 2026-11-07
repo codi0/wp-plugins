@@ -17,6 +17,7 @@ use CodiMcp\Auth\OAuthServer;
 use CodiMcp\Auth\OAuthStore;
 use CodiMcp\Exposure\ExposurePolicy;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
+use CodiMcp\Core\Downloads\DownloadCapabilityService;
 
 final class Plugin
 {
@@ -83,9 +84,11 @@ final class Plugin
             add_action('admin_menu', [$this, 'registerAdminMenu']);
             add_action('admin_post_codi_mcp_save_exposure', [$this, 'saveExposure']);
             add_action('admin_post_codi_mcp_save_packages', [$this, 'saveSitePackages']);
+            add_action('admin_post_codi_mcp_revoke_oauth_client', [$this, 'revokeSiteOAuthClient']);
             if (function_exists('is_multisite') && is_multisite()) {
                 add_action('network_admin_menu', [$this, 'registerNetworkAdminMenu']);
                 add_action('network_admin_edit_codi_mcp_save_network_packages', [$this, 'saveNetworkPackages']);
+                add_action('network_admin_edit_codi_mcp_revoke_network_oauth_client', [$this, 'revokeNetworkOAuthClient']);
             }
         }
     }
@@ -141,6 +144,7 @@ final class Plugin
         }
 
         UploadCapabilityService::registerRoute();
+        DownloadCapabilityService::registerRoutes();
 
         foreach ($this->enabledPackages() as $package) {
             if (method_exists($package, 'registerRoutes')) {
@@ -174,6 +178,14 @@ final class Plugin
             'methods' => 'POST',
             'callback' => static function ($request) use ($controller) {
                 return $controller->token($request);
+            },
+            'permission_callback' => '__return_true',
+        ]);
+
+        register_rest_route($namespace, '/oauth/revoke', [
+            'methods' => 'POST',
+            'callback' => static function ($request) use ($controller) {
+                return $controller->revoke($request);
             },
             'permission_callback' => '__return_true',
         ]);
@@ -348,6 +360,11 @@ final class Plugin
         $this->adminPage()->savePackages();
     }
 
+    public function revokeSiteOAuthClient(): void
+    {
+        $this->adminPage()->revokeOAuthClient();
+    }
+
     public function registerNetworkAdminMenu(): void
     {
         $this->networkAdminPage()->registerMenu();
@@ -356,6 +373,11 @@ final class Plugin
     public function saveNetworkPackages(): void
     {
         $this->networkAdminPage()->save();
+    }
+
+    public function revokeNetworkOAuthClient(): void
+    {
+        $this->networkAdminPage()->revokeOAuthClient();
     }
 
     /** @return AbilityPackage[] */
@@ -412,8 +434,10 @@ final class Plugin
                 CODI_MCP_SERVER_ID,
                 CODI_MCP_SERVER_REST_ROUTE,
                 'Codi MCP',
-                'Site-local WordPress abilities exposed by Codi MCP.',
-                $this->multisiteAbilityNames()
+                'WordPress site administration and content editing. Reuse returned IDs. Use Content for post/page lifecycle, Presentation for blocks and design, and Plugins/Themes for source packages.',
+                $this->multisiteAbilityNames(),
+                null,
+                fn ($request): bool => $this->authenticator()->hasValidBearer($request)
             );
         }
         return $this->mcpServer;
@@ -427,9 +451,10 @@ final class Plugin
                 CODI_MCP_NETWORK_SERVER_ID,
                 CODI_MCP_NETWORK_SERVER_REST_ROUTE,
                 'Codi MCP — Network',
-                'Network-managed Codi abilities and multisite gateway routing.',
+                'WordPress multisite. Reuse known site IDs and discovery results. Search for unknown abilities; call known abilities directly with their input schema. Never guess a site ID.',
                 array(),
-                $this->networkServerAbilityNames()
+                $this->networkServerAbilityNames(),
+                fn ($request): bool => $this->networkAuthenticator()->hasValidBearer($request)
             );
         }
         return $this->networkMcpServer;
@@ -615,7 +640,7 @@ final class Plugin
     private function adminPage(): AdminPage
     {
         if ($this->adminPage === null) {
-            $this->adminPage = new AdminPage($this->exposure(), $this->oauthProfile(), $this->availability(), $this->packages());
+            $this->adminPage = new AdminPage($this->exposure(), $this->oauthProfile(), $this->oauthServer(), $this->availability(), $this->packages());
         }
         return $this->adminPage;
     }
@@ -626,7 +651,8 @@ final class Plugin
             $this->networkAdminPage = new NetworkAdminPage(
                 $this->availability(),
                 $this->packages(),
-                $this->networkOAuthProfile()
+                $this->networkOAuthProfile(),
+                $this->networkOAuthServer()
             );
         }
         return $this->networkAdminPage;

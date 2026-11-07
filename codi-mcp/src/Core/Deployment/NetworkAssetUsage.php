@@ -8,49 +8,53 @@ final class NetworkAssetUsage
 {
     public function pluginActiveAnywhere(string $pluginFile): bool
     {
+        return $this->pluginActiveSiteIds($pluginFile) !== array();
+    }
+
+    /** @return int[] */
+    public function pluginActiveSiteIds(string $pluginFile): array
+    {
         $pluginFile = trim($pluginFile);
         if ($pluginFile === '') {
-            return false;
+            return array();
         }
-
         if (!is_multisite()) {
-            return in_array($pluginFile, (array) get_option('active_plugins', array()), true);
+            return in_array($pluginFile, (array) get_option('active_plugins', array()), true)
+                ? array(max(1, (int) get_current_blog_id()))
+                : array();
         }
-
-        $networkActive = (array) get_site_option('active_sitewide_plugins', array());
-        if (array_key_exists($pluginFile, $networkActive)) {
-            return true;
+        $siteIds = $this->siteIds();
+        if (array_key_exists($pluginFile, (array) get_site_option('active_sitewide_plugins', array()))) {
+            return $siteIds;
         }
-
-        foreach ($this->siteIds() as $siteId) {
-            if (in_array($pluginFile, (array) get_blog_option($siteId, 'active_plugins', array()), true)) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_values(array_filter(
+            $siteIds,
+            static fn (int $siteId): bool => in_array($pluginFile, (array) get_blog_option($siteId, 'active_plugins', array()), true)
+        ));
     }
 
     public function themeOrChildActiveAnywhere(string $stylesheet): bool
     {
+        return $this->themeActiveSiteIds($stylesheet) !== array();
+    }
+
+    /** @return int[] */
+    public function themeActiveSiteIds(string $stylesheet): array
+    {
         $stylesheet = trim($stylesheet);
         if ($stylesheet === '') {
-            return false;
+            return array();
         }
-
         if (!is_multisite()) {
-            return (string) get_option('stylesheet', '') === $stylesheet
-                || (string) get_option('template', '') === $stylesheet;
+            return ((string) get_option('stylesheet', '') === $stylesheet || (string) get_option('template', '') === $stylesheet)
+                ? array(max(1, (int) get_current_blog_id()))
+                : array();
         }
-
-        foreach ($this->siteIds() as $siteId) {
-            if ((string) get_blog_option($siteId, 'stylesheet', '') === $stylesheet
-                || (string) get_blog_option($siteId, 'template', '') === $stylesheet) {
-                return true;
-            }
-        }
-
-        return false;
+        return array_values(array_filter(
+            $this->siteIds(),
+            static fn (int $siteId): bool => (string) get_blog_option($siteId, 'stylesheet', '') === $stylesheet
+                || (string) get_blog_option($siteId, 'template', '') === $stylesheet
+        ));
     }
 
     /** @return int[] */

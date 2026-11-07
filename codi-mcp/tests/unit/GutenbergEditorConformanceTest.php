@@ -20,7 +20,6 @@ final class GutenbergEditorConformanceTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
     }
 
     public function test_php_save_runtime_matches_real_editor_markup_fixtures(): void

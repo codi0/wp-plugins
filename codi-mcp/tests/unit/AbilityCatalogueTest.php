@@ -24,8 +24,7 @@ namespace CodiMcpTest\Unit {
     {
         protected function setUp(): void
         {
-            \codi_mcp_test_reset_environment();
-            if (!defined('CODI_MCP_ABILITY_PREFIX')) {
+                if (!defined('CODI_MCP_ABILITY_PREFIX')) {
                 define('CODI_MCP_ABILITY_PREFIX', 'codi');
             }
         }

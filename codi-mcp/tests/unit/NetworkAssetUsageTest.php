@@ -11,7 +11,6 @@ final class NetworkAssetUsageTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         $GLOBALS['codi_mcp_test_wp_multisite'] = true;
         $GLOBALS['codi_mcp_test_wp_site_options']['active_sitewide_plugins'] = array();
         $GLOBALS['codi_mcp_test_wp_options'][1]['active_plugins'] = array();
@@ -35,6 +34,24 @@ final class NetworkAssetUsageTest extends TestCase
         $GLOBALS['codi_mcp_test_wp_options'][2]['active_plugins'] = array();
         $GLOBALS['codi_mcp_test_wp_site_options']['active_sitewide_plugins'] = array($plugin => time());
         $this->assertTrue($usage->pluginActiveAnywhere($plugin));
+    }
+
+    public function test_active_site_contexts_are_complete_and_deterministic(): void
+    {
+        $usage = new NetworkAssetUsage();
+        $plugin = 'fixture/fixture.php';
+
+        $GLOBALS['codi_mcp_test_wp_options'][2]['active_plugins'] = array($plugin);
+        $this->assertSame(array(2), $usage->pluginActiveSiteIds($plugin));
+
+        $GLOBALS['codi_mcp_test_wp_site_options']['active_sitewide_plugins'] = array($plugin => time());
+        $this->assertSame(array(1, 2), $usage->pluginActiveSiteIds($plugin));
+
+        $GLOBALS['codi_mcp_test_wp_options'][1]['stylesheet'] = 'target-theme';
+        $GLOBALS['codi_mcp_test_wp_options'][1]['template'] = 'target-theme';
+        $GLOBALS['codi_mcp_test_wp_options'][2]['stylesheet'] = 'active-child';
+        $GLOBALS['codi_mcp_test_wp_options'][2]['template'] = 'target-theme';
+        $this->assertSame(array(1, 2), $usage->themeActiveSiteIds('target-theme'));
     }
 
     public function test_theme_is_blocked_when_it_or_a_child_is_active_on_any_site(): void

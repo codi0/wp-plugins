@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace CodiMcpTest\Unit;
 
 use CodiMcp\Audit\AuditLog;
+use CodiMcp\Auth\AuthHeader;
+use CodiMcp\Auth\McpAuthenticator;
 use CodiMcp\Auth\OAuthProfile;
 use CodiMcp\Auth\OAuthServer;
 use CodiMcp\Auth\OAuthStore;
@@ -14,7 +16,6 @@ final class OAuthServerTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         foreach (array(
             'CODI_MCP_SERVER_REST_NAMESPACE' => 'mcp',
             'CODI_MCP_SERVER_REST_ROUTE' => 'codi',
@@ -67,6 +68,24 @@ final class OAuthServerTest extends TestCase
         $this->assertSame('invalid_client_metadata', (string) ($longName['error'] ?? ''));
     }
 
+    public function test_http_loopback_redirects_are_native_client_only(): void
+    {
+        $server = $this->server(new OAuthStore());
+        $web = $server->registerClient(array(
+            'client_name' => 'Web client',
+            'application_type' => 'web',
+            'redirect_uris' => array('http://127.0.0.1:43210/callback'),
+        ), 'redirect-source');
+        $this->assertSame('invalid_redirect_uri', (string) ($web['error'] ?? ''));
+
+        $native = $server->registerClient(array(
+            'client_name' => 'Native client',
+            'application_type' => 'native',
+            'redirect_uris' => array('http://127.0.0.1:43210/callback'),
+        ), 'redirect-source');
+        $this->assertFalse(isset($native['error']));
+    }
+
     public function test_registration_is_rate_limited_per_source(): void
     {
         $server = $this->server(new OAuthStore());
@@ -90,7 +109,7 @@ final class OAuthServerTest extends TestCase
     public function test_refresh_rotation_issues_nothing_when_old_token_cannot_be_consumed(): void
     {
         [$server, $clientId, $refreshToken] = $this->authorizedRefreshToken();
-        $GLOBALS['codi_mcp_test_wp_option_delete_failures']['codi_mcp_oauth_credentials_refresh'] = 1;
+        $GLOBALS['codi_mcp_test_wp_option_write_failures']['codi_mcp_oauth_credentials_refresh'] = 1;
 
         $failed = $server->token(array(
             'grant_type' => 'refresh_token',
@@ -108,6 +127,131 @@ final class OAuthServerTest extends TestCase
             'resource' => (new OAuthProfile())->primaryEndpoint(),
         ));
         $this->assertFalse(isset($retry['error']), 'The old refresh token should remain usable when consumption failed.');
+    }
+
+    public function test_refresh_replay_revokes_the_active_grant_family(): void
+    {
+        [$server, $clientId, $refreshToken] = $this->authorizedRefreshToken();
+        $rotated = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertFalse(isset($rotated['error']));
+        $nextRefresh = (string) ($rotated['refresh_token'] ?? '');
+        $nextAccess = (string) ($rotated['access_token'] ?? '');
+        $this->assertTrue($nextRefresh !== '');
+        $this->assertSame(7, $server->userIdForBearerToken($nextAccess));
+
+        $replay = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertSame('invalid_grant', (string) ($replay['error'] ?? ''));
+        $this->assertSame(null, $server->userIdForBearerToken($nextAccess));
+
+        $family = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $nextRefresh,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertSame('invalid_grant', (string) ($family['error'] ?? ''));
+    }
+
+    public function test_signed_refresh_token_replay_remains_detectable_without_a_consumed_token_tombstone(): void
+    {
+        [$server, $clientId, $refreshToken] = $this->authorizedRefreshToken();
+        $rotated = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $nextRefresh = (string) ($rotated['refresh_token'] ?? '');
+        $nextAccess = (string) ($rotated['access_token'] ?? '');
+        $this->assertTrue($nextRefresh !== '');
+        $this->assertSame(7, $server->userIdForBearerToken($nextAccess));
+
+        $bucket = (array) ($GLOBALS['codi_mcp_test_wp_options'][1]['codi_mcp_oauth_credentials_refresh'] ?? array());
+        unset($bucket[hash('sha256', $refreshToken)]);
+        $GLOBALS['codi_mcp_test_wp_options'][1]['codi_mcp_oauth_credentials_refresh'] = $bucket;
+
+        $replay = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertSame('invalid_grant', (string) ($replay['error'] ?? ''));
+        $this->assertSame(null, $server->userIdForBearerToken($nextAccess));
+        $family = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $nextRefresh,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertSame('invalid_grant', (string) ($family['error'] ?? ''));
+    }
+
+    public function test_token_and_client_revocation_invalidate_active_credentials(): void
+    {
+        [$server, $clientId, $refreshToken, $accessToken] = $this->authorizedRefreshToken();
+        $revoked = $server->revokeToken(array(
+            'token' => $refreshToken,
+            'token_type_hint' => 'refresh_token',
+            'client_id' => $clientId,
+        ));
+        $this->assertSame(200, (int) ($revoked['status'] ?? 0));
+        $this->assertSame(null, $server->userIdForBearerToken($accessToken));
+        $refresh = $server->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken,
+            'client_id' => $clientId,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertSame('invalid_grant', (string) ($refresh['error'] ?? ''));
+
+        [$server2, $clientId2, $refreshToken2, $accessToken2] = $this->authorizedRefreshToken();
+        $this->assertTrue($server2->revokeClient($clientId2));
+        $this->assertSame(null, $server2->userIdForBearerToken($accessToken2));
+        $this->assertSame(null, $server2->client($clientId2));
+        $refresh2 = $server2->token(array(
+            'grant_type' => 'refresh_token',
+            'refresh_token' => $refreshToken2,
+            'client_id' => $clientId2,
+            'resource' => (new OAuthProfile())->primaryEndpoint(),
+        ));
+        $this->assertSame('invalid_grant', (string) ($refresh2['error'] ?? ''));
+    }
+
+    public function test_mcp_authenticator_accepts_only_a_valid_bearer_for_the_exact_resource_route(): void
+    {
+        [$server, , , $accessToken] = $this->authorizedRefreshToken();
+        $profile = new OAuthProfile();
+        $authenticator = new McpAuthenticator($server, $profile, new AuthHeader());
+        $request = new class($accessToken) {
+            public function __construct(private string $token) {}
+            public function get_route(): string { return '/mcp/codi'; }
+            public function get_header(string $name): string { return strtolower($name) === 'authorization' ? 'Bearer ' . $this->token : ''; }
+        };
+        $this->assertTrue($authenticator->hasValidBearer($request));
+
+        $invalid = new class {
+            public function get_route(): string { return '/mcp/codi'; }
+            public function get_header(string $name): string { return strtolower($name) === 'authorization' ? 'Bearer invalid' : ''; }
+        };
+        $this->assertFalse($authenticator->hasValidBearer($invalid));
+
+        $wrongRoute = new class($accessToken) {
+            public function __construct(private string $token) {}
+            public function get_route(): string { return '/wp/v2/posts'; }
+            public function get_header(string $name): string { return strtolower($name) === 'authorization' ? 'Bearer ' . $this->token : ''; }
+        };
+        $this->assertFalse($authenticator->hasValidBearer($wrongRoute));
     }
 
     public function test_refresh_rotation_consumes_old_token_before_replacement_storage(): void
@@ -176,6 +320,8 @@ final class OAuthServerTest extends TestCase
         $this->assertSame('https://example.test/wp-json/mcp/codi-network', $network->primaryEndpoint());
         $this->assertSame('https://example.test/wp-json/codi-mcp/v1', $site->issuer());
         $this->assertSame('https://example.test/wp-json/codi-mcp/v1/network', $network->issuer());
+        $this->assertSame('https://example.test/wp-json/codi-mcp/v1/oauth/revoke', $site->revocationEndpoint());
+        $this->assertSame('https://example.test/wp-json/codi-mcp/v1/network/oauth/revoke', $network->revocationEndpoint());
         $this->assertSame('site:1|mcp/codi', $site->resourceKey());
         $this->assertSame('network:1|mcp/codi-network', $network->resourceKey());
         $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 2;

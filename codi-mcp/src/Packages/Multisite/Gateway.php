@@ -39,28 +39,43 @@ final class Gateway
     {
         $siteId = (int) ($input['site_id'] ?? 0);
         $search = strtolower(trim((string) ($input['search'] ?? '')));
+        $detail = $input['detail'] ?? 'auto';
+        if (!in_array($detail, array('auto', 'summary', 'schema'), true)) {
+            return new \WP_Error('codi_multisite_invalid_detail', 'detail must be auto, summary, or schema.', array('status' => 400));
+        }
         $abilities = $this->client->abilities($siteId, $this->currentUserId());
         if (is_wp_error($abilities)) {
             return $abilities;
         }
         if ($search !== '') {
-            $terms = preg_split('/\\s+/', $search) ?: array();
-            $terms = array_values(array_filter($terms, static fn (string $term): bool => $term !== ''));
-            $abilities = array_values(array_filter(
-                $abilities,
-                static function (array $ability) use ($terms): bool {
-                    $haystack = strtolower(
-                        (string) ($ability['name'] ?? '') . ' ' .
-                        (string) ($ability['description'] ?? '')
-                    );
+            $exact = array_values(array_filter($abilities, static fn (array $ability): bool => strtolower((string) $ability['name']) === $search));
+            if ($exact === array()) {
+                $short = array_values(array_filter($abilities, static function (array $ability) use ($search): bool {
+                    $name = strtolower((string) $ability['name']);
+                    return substr($name, (int) strrpos($name, '/') + 1) === $search;
+                }));
+                $exact = count($short) === 1 ? $short : array();
+            }
+            if ($exact !== array()) {
+                $abilities = $exact;
+            } else {
+                $terms = preg_split('/\s+/', $search) ?: array();
+                $abilities = array_values(array_filter($abilities, static function (array $ability) use ($terms): bool {
+                    $text = strtolower((string) $ability['name'] . ' ' . (string) $ability['description']);
                     foreach ($terms as $term) {
-                        if (!str_contains($haystack, $term)) {
+                        if (!str_contains($text, $term)) {
                             return false;
                         }
                     }
                     return true;
-                }
-            ));
+                }));
+            }
+        }
+        if ($detail === 'summary' || ($detail === 'auto' && count($abilities) !== 1)) {
+            foreach ($abilities as &$ability) {
+                unset($ability['input_schema']);
+            }
+            unset($ability);
         }
         return array('abilities' => $abilities);
     }

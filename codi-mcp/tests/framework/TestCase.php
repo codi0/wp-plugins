@@ -17,6 +17,12 @@ abstract class TestCase
 
         foreach ($this->discoverTestMethodNames() as $methodName) {
             try {
+                if (function_exists('codi_mcp_test_reset_environment')) {
+                    \codi_mcp_test_reset_environment();
+                }
+                if ($this->usesThemeFixtureFiles() && function_exists('codi_mcp_test_reset_theme_fixture_files')) {
+                    \codi_mcp_test_reset_theme_fixture_files();
+                }
                 $this->setUp();
                 $this->{$methodName}();
                 $passed++;
@@ -48,9 +54,11 @@ abstract class TestCase
 
     protected function tearDown(): void
     {
-        if (function_exists('codi_mcp_test_reset_environment')) {
-            \codi_mcp_test_reset_environment();
-        }
+    }
+
+    protected function usesThemeFixtureFiles(): bool
+    {
+        return false;
     }
 
     protected function assertSame(mixed $expected, mixed $actual, string $message = ''): void

@@ -19,7 +19,7 @@ final class OAuthStore
 
     public function registerClient(string $clientId, array $record, int $maxClients, int $unusedTtl, int $usedIdleTtl): bool
     {
-        return (bool) $this->mutex->synchronized('oauth-clients', function () use ($clientId, $record, $maxClients, $unusedTtl, $usedIdleTtl): bool {
+        return (bool) $this->mutex->synchronized($this->stateMutexScope(), function () use ($clientId, $record, $maxClients, $unusedTtl, $usedIdleTtl): bool {
             $index = $this->clientIndex();
             $now = time();
             $changed = false;
@@ -37,6 +37,7 @@ final class OAuthStore
                 $staleUsed = $usedAt > 0 && $lastUsedAt > 0 && $lastUsedAt < $now - max(1, $usedIdleTtl);
                 if ($staleUnused || $staleUsed) {
                     $this->deleteClientRecord($id);
+                    $this->removeClientCredentialsUnlocked($id);
                     unset($index[$id]);
                     $changed = true;
                 }
@@ -69,19 +70,34 @@ final class OAuthStore
         return $this->clientRecord($clientId);
     }
 
+    /** @return array<int,array<string,mixed>> */
+    public function clients(): array
+    {
+        $items = array();
+        foreach (array_keys($this->clientIndex()) as $clientId) {
+            $record = $this->clientRecord($clientId);
+            if (is_array($record)) {
+                $items[] = $record;
+            }
+        }
+        usort($items, static fn (array $left, array $right): int => ((int) ($right['last_used_at'] ?? $right['created_at'] ?? 0)) <=> ((int) ($left['last_used_at'] ?? $left['created_at'] ?? 0)));
+        return $items;
+    }
+
     public function deleteClient(string $clientId): void
     {
-        $this->mutex->synchronized('oauth-clients', function () use ($clientId): void {
+        $this->mutex->synchronized($this->stateMutexScope(), function () use ($clientId): void {
             $index = $this->clientIndex();
             unset($index[$clientId]);
             $this->writeClientIndex($index);
             $this->deleteClientRecord($clientId);
+            $this->removeClientCredentialsUnlocked($clientId);
         });
     }
 
     public function touchClient(string $clientId): void
     {
-        $this->mutex->synchronized('oauth-clients', function () use ($clientId): void {
+        $this->mutex->synchronized($this->stateMutexScope(), function () use ($clientId): void {
             $record = $this->clientRecord($clientId);
             if (!is_array($record)) {
                 throw new \RuntimeException('OAuth client no longer exists.');
@@ -165,12 +181,92 @@ final class OAuthStore
 
     public function exchangeRefreshToken(string $hash, callable $callback)
     {
-        return $this->exchange('refresh', $hash, $callback);
+        return $this->mutex->synchronized($this->stateMutexScope(), function () use ($hash, $callback) {
+            $entries = $this->pruneCredentials($this->credentialBucket('refresh'));
+            $entry = $entries[$hash] ?? null;
+            if (!is_array($entry) || !is_array($entry['record'] ?? null)) {
+                $this->writeCredentialBucket('refresh', $entries);
+                return null;
+            }
+
+            $record = (array) $entry['record'];
+            if (($entry['state'] ?? 'active') === 'spent') {
+                $grantId = trim((string) ($record['grant_id'] ?? ''));
+                if ($grantId !== '') {
+                    $this->markGrantRevokedUnlocked($grantId, max(time() + 1, (int) ($entry['expires_at'] ?? 0)));
+                    $this->removeGrantCredentialsUnlocked($grantId);
+                }
+                return array('replay_detected' => true);
+            }
+
+            $exchange = $callback($record);
+            if (!is_array($exchange) || !array_key_exists('consume', $exchange) || !array_key_exists('result', $exchange)) {
+                throw new \RuntimeException('Invalid OAuth credential exchange result.');
+            }
+            if ((bool) $exchange['consume']) {
+                $entry['state'] = 'spent';
+                $entries[$hash] = $entry;
+                $this->writeCredentialBucket('refresh', $entries);
+            }
+            return $exchange['result'];
+        });
+    }
+
+    public function isGrantRevoked(string $grantId): bool
+    {
+        $grantId = trim($grantId);
+        if ($grantId === '') {
+            return false;
+        }
+        $entries = $this->pruneCredentials($this->credentialBucket('revoked'));
+        return isset($entries[hash('sha256', $grantId)]);
+    }
+
+    public function revokeGrant(string $grantId, int $revocationTtl): void
+    {
+        $grantId = trim($grantId);
+        if ($grantId === '') {
+            return;
+        }
+        $this->mutex->synchronized($this->stateMutexScope(), function () use ($grantId, $revocationTtl): void {
+            $this->markGrantRevokedUnlocked($grantId, time() + max(1, $revocationTtl));
+            $this->removeGrantCredentialsUnlocked($grantId);
+        });
+    }
+
+    public function revokeTokenForClient(string $hash, string $clientId, string $hint = '', int $revocationTtl = 2592000): bool
+    {
+        return (bool) $this->mutex->synchronized($this->stateMutexScope(), function () use ($hash, $clientId, $hint, $revocationTtl): bool {
+            $buckets = $hint === 'refresh_token'
+                ? array('refresh', 'access')
+                : ($hint === 'access_token' ? array('access', 'refresh') : array('refresh', 'access'));
+            foreach ($buckets as $bucket) {
+                $entries = $this->pruneCredentials($this->credentialBucket($bucket));
+                $entry = $entries[$hash] ?? null;
+                if (!is_array($entry) || !is_array($entry['record'] ?? null)) {
+                    continue;
+                }
+                $record = (array) $entry['record'];
+                if (!hash_equals($clientId, (string) ($record['client_id'] ?? ''))) {
+                    return false;
+                }
+                $grantId = trim((string) ($record['grant_id'] ?? ''));
+                if ($grantId !== '') {
+                    $this->markGrantRevokedUnlocked($grantId, time() + max(1, $revocationTtl));
+                    $this->removeGrantCredentialsUnlocked($grantId);
+                } else {
+                    unset($entries[$hash]);
+                    $this->writeCredentialBucket($bucket, $entries);
+                }
+                return true;
+            }
+            return false;
+        });
     }
 
     private function exchange(string $bucket, string $hash, callable $callback)
     {
-        return $this->mutex->synchronized($this->mutexScope('oauth-' . $bucket), function () use ($bucket, $hash, $callback) {
+        return $this->mutex->synchronized($this->stateMutexScope(), function () use ($bucket, $hash, $callback) {
             $entries = $this->pruneCredentials($this->credentialBucket($bucket));
             $entry = $entries[$hash] ?? null;
             if (!is_array($entry) || !is_array($entry['record'] ?? null)) {
@@ -193,12 +289,20 @@ final class OAuthStore
 
     private function saveCredential(string $bucket, string $hash, array $record, int $ttl): void
     {
-        $this->mutex->synchronized($this->mutexScope('oauth-' . $bucket), function () use ($bucket, $hash, $record, $ttl): void {
+        $this->mutex->synchronized($this->stateMutexScope(), function () use ($bucket, $hash, $record, $ttl): void {
+            $grantId = trim((string) ($record['grant_id'] ?? ''));
+            if (in_array($bucket, array('access', 'refresh'), true) && $grantId !== '' && $this->grantRevokedUnlocked($grantId)) {
+                throw new \RuntimeException('The OAuth grant has been revoked.');
+            }
             $entries = $this->pruneCredentials($this->credentialBucket($bucket));
-            $entries[$hash] = array(
+            $entry = array(
                 'record' => $record,
                 'expires_at' => time() + max(1, $ttl),
             );
+            if ($bucket === 'refresh') {
+                $entry['state'] = 'active';
+            }
+            $entries[$hash] = $entry;
             $this->writeCredentialBucket($bucket, $entries);
         });
     }
@@ -208,6 +312,9 @@ final class OAuthStore
         $entries = $this->credentialBucket($bucket);
         $entry = $entries[$hash] ?? null;
         if (!is_array($entry) || !is_array($entry['record'] ?? null)) {
+            return null;
+        }
+        if (($entry['state'] ?? 'active') !== 'active') {
             return null;
         }
         if ((int) ($entry['expires_at'] ?? 0) > time()) {
@@ -220,21 +327,21 @@ final class OAuthStore
 
     private function deleteCredential(string $bucket, string $hash): void
     {
-        $this->mutex->synchronized($this->mutexScope('oauth-' . $bucket), function () use ($bucket, $hash): void {
+        $this->mutex->synchronized($this->stateMutexScope(), function () use ($bucket, $hash): void {
             $entries = $this->pruneCredentials($this->credentialBucket($bucket));
             unset($entries[$hash]);
             $this->writeCredentialBucket($bucket, $entries);
         });
     }
 
-    /** @return array<string,array{record:array<string,mixed>,expires_at:int}> */
+    /** @return array<string,array{record:array<string,mixed>,expires_at:int,state?:string}> */
     private function credentialBucket(string $bucket): array
     {
         $value = $this->readOption($this->credentialOptionName($bucket), array());
         return is_array($value) ? $value : array();
     }
 
-    /** @param array<string,mixed> $entries @return array<string,array{record:array<string,mixed>,expires_at:int}> */
+    /** @param array<string,mixed> $entries @return array<string,array{record:array<string,mixed>,expires_at:int,state?:string}> */
     private function pruneCredentials(array $entries): array
     {
         $now = time();
@@ -248,11 +355,14 @@ final class OAuthStore
                 continue;
             }
             $valid[$hash] = array('record' => (array) $entry['record'], 'expires_at' => $expiresAt);
+            if (isset($entry['state']) && is_string($entry['state'])) {
+                $valid[$hash]['state'] = $entry['state'];
+            }
         }
         return $valid;
     }
 
-    /** @param array<string,array{record:array<string,mixed>,expires_at:int}> $entries */
+    /** @param array<string,array{record:array<string,mixed>,expires_at:int,state?:string}> $entries */
     private function writeCredentialBucket(string $bucket, array $entries): void
     {
         $name = $this->credentialOptionName($bucket);
@@ -265,7 +375,7 @@ final class OAuthStore
 
     private function credentialOptionName(string $bucket): string
     {
-        if (!in_array($bucket, array('code', 'access', 'refresh'), true)) {
+        if (!in_array($bucket, array('code', 'access', 'refresh', 'revoked'), true)) {
             throw new \InvalidArgumentException('Unknown OAuth credential bucket.');
         }
         return self::CREDENTIAL_OPTION_PREFIX . $bucket;
@@ -364,8 +474,65 @@ final class OAuthStore
         return 'codi_mcp_oauth_client_' . substr(hash('sha256', $clientId), 0, 40);
     }
 
-    private function mutexScope(string $scope): string
+    private function stateMutexScope(): string
     {
-        return ($this->networkScoped ? 'network-' : 'site-') . $scope;
+        return ($this->networkScoped ? 'network-' : 'site-') . 'oauth-state';
+    }
+
+    private function grantRevokedUnlocked(string $grantId): bool
+    {
+        $entries = $this->pruneCredentials($this->credentialBucket('revoked'));
+        return isset($entries[hash('sha256', $grantId)]);
+    }
+
+    private function markGrantRevokedUnlocked(string $grantId, int $expiresAt): void
+    {
+        $entries = $this->pruneCredentials($this->credentialBucket('revoked'));
+        $entries[hash('sha256', $grantId)] = array(
+            'record' => array('grant_id' => $grantId),
+            'expires_at' => max(time() + 1, $expiresAt),
+        );
+        $this->writeCredentialBucket('revoked', $entries);
+    }
+
+    private function removeGrantCredentialsUnlocked(string $grantId): void
+    {
+        foreach (array('code', 'access', 'refresh') as $bucket) {
+            $entries = $this->pruneCredentials($this->credentialBucket($bucket));
+            $changed = false;
+            foreach ($entries as $hash => $entry) {
+                $record = is_array($entry['record'] ?? null) ? (array) $entry['record'] : array();
+                if (!hash_equals($grantId, (string) ($record['grant_id'] ?? ''))) {
+                    continue;
+                }
+                if ($bucket === 'refresh' && ($entry['state'] ?? 'active') === 'spent') {
+                    continue;
+                }
+                unset($entries[$hash]);
+                $changed = true;
+            }
+            if ($changed) {
+                $this->writeCredentialBucket($bucket, $entries);
+            }
+        }
+    }
+
+    private function removeClientCredentialsUnlocked(string $clientId): void
+    {
+        foreach (array('code', 'access', 'refresh') as $bucket) {
+            $entries = $this->pruneCredentials($this->credentialBucket($bucket));
+            $changed = false;
+            foreach ($entries as $hash => $entry) {
+                $record = is_array($entry['record'] ?? null) ? (array) $entry['record'] : array();
+                if (!hash_equals($clientId, (string) ($record['client_id'] ?? ''))) {
+                    continue;
+                }
+                unset($entries[$hash]);
+                $changed = true;
+            }
+            if ($changed) {
+                $this->writeCredentialBucket($bucket, $entries);
+            }
+        }
     }
 }

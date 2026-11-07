@@ -50,6 +50,11 @@ final class OAuthServer
             );
         }
 
+        $applicationType = strtolower(trim((string) ($input['application_type'] ?? 'web')));
+        if (!in_array($applicationType, ['web', 'native'], true)) {
+            return $this->error('invalid_client_metadata', 400, 'Unsupported application_type.');
+        }
+
         $rawRedirectUris = (array) ($input['redirect_uris'] ?? array());
         if (count($rawRedirectUris) > self::MAX_REDIRECT_URIS) {
             return $this->error('invalid_client_metadata', 400, 'Too many redirect URIs.');
@@ -66,8 +71,8 @@ final class OAuthServer
             if (strlen($redirectUri) > self::MAX_REDIRECT_URI_LENGTH) {
                 return $this->error('invalid_client_metadata', 400, 'A redirect URI is too long.');
             }
-            if (!$this->validRedirectUri($redirectUri)) {
-                return $this->error('invalid_redirect_uri', 400, 'Redirect URIs must use HTTPS, except localhost callbacks may use HTTP.');
+            if (!$this->validRedirectUri($redirectUri, $applicationType)) {
+                return $this->error('invalid_redirect_uri', 400, 'Web redirect URIs must use HTTPS; native clients may also use HTTP loopback callbacks.');
             }
         }
 
@@ -87,11 +92,6 @@ final class OAuthServer
         $authMethod = trim((string) ($input['token_endpoint_auth_method'] ?? 'none'));
         if ($authMethod !== 'none') {
             return $this->error('invalid_client_metadata', 400, 'Only public OAuth clients are supported.');
-        }
-
-        $applicationType = strtolower(trim((string) ($input['application_type'] ?? 'web')));
-        if (!in_array($applicationType, ['web', 'native'], true)) {
-            return $this->error('invalid_client_metadata', 400, 'Unsupported application_type.');
         }
 
         $clientName = trim((string) ($input['client_name'] ?? 'Codi MCP Client'));
@@ -150,6 +150,38 @@ final class OAuthServer
     public function client(string $clientId): ?array
     {
         return $this->store->client($clientId);
+    }
+
+    /** @return array<int,array<string,mixed>> */
+    public function clients(): array
+    {
+        try {
+            return $this->store->clients();
+        } catch (\Throwable) {
+            return array();
+        }
+    }
+
+    public function revokeClient(string $clientId): bool
+    {
+        $clientId = trim($clientId);
+        if ($clientId === '') {
+            return false;
+        }
+        try {
+            if (!is_array($this->store->client($clientId))) {
+                return false;
+            }
+            $this->store->deleteClient($clientId);
+        } catch (\Throwable) {
+            return false;
+        }
+        try {
+            $this->audit->recordOAuth('oauth.client_revoked', $clientId, 'succeeded');
+        } catch (\Throwable) {
+            $this->logCleanupFailure('client revocation audit');
+        }
+        return true;
     }
 
     /** @return array<string,mixed> */
@@ -222,6 +254,7 @@ final class OAuthServer
         $code = $this->secureToken('codi_code', 24);
         $record = [
             'client_id' => (string) $prepared['client_id'],
+            'grant_id' => $this->secureToken('codi_grant', 16),
             'redirect_uri' => (string) $prepared['redirect_uri'],
             'code_challenge' => (string) $prepared['code_challenge'],
             'resource' => (string) $prepared['resource'],
@@ -288,6 +321,34 @@ final class OAuthServer
         return $this->error('unsupported_grant_type', 400);
     }
 
+    /** @return array<string,mixed> */
+    public function revokeToken(array $input): array
+    {
+        $token = trim((string) ($input['token'] ?? ''));
+        $clientId = trim((string) ($input['client_id'] ?? ''));
+        if ($token === '' || $clientId === '') {
+            return $this->error('invalid_request', 400);
+        }
+        $client = $this->store->client($clientId);
+        if (!is_array($client) || !$this->validClientSecret($input, $client)) {
+            return $this->error('invalid_client', 401);
+        }
+        $hint = trim((string) ($input['token_type_hint'] ?? ''));
+        try {
+            $revoked = $this->store->revokeTokenForClient($this->hash($token), $clientId, $hint, self::REFRESH_TOKEN_TTL);
+        } catch (\Throwable) {
+            return $this->error('server_error', 503, 'OAuth revocation storage is unavailable.');
+        }
+        if ($revoked) {
+            try {
+                $this->audit->recordOAuth('oauth.token_revoked', $clientId, 'succeeded');
+            } catch (\Throwable) {
+                $this->logCleanupFailure('token revocation audit');
+            }
+        }
+        return array('status' => 200, 'headers' => ['Cache-Control' => 'no-store', 'Pragma' => 'no-cache']);
+    }
+
     public function userIdForBearerTokenEarly(string $token): ?int
     {
         $record = $this->bearerRecord($token);
@@ -336,6 +397,14 @@ final class OAuthServer
 
     private function userIdFromBearerRecord(array $record): ?int
     {
+        $clientId = trim((string) ($record['client_id'] ?? ''));
+        if ($clientId === '' || !is_array($this->store->client($clientId))) {
+            return null;
+        }
+        $grantId = trim((string) ($record['grant_id'] ?? ''));
+        if ($grantId !== '' && $this->store->isGrantRevoked($grantId)) {
+            return null;
+        }
         if (!in_array('mcp', preg_split('/\s+/', trim((string) ($record['scope'] ?? ''))) ?: [], true)) {
             return null;
         }
@@ -415,6 +484,7 @@ final class OAuthServer
             return $this->error('invalid_request', 400);
         }
 
+        $signedGrantId = $this->refreshGrantId($refreshToken);
         try {
             $result = $this->store->exchangeRefreshToken($this->hash($refreshToken), function (array $record) use ($input, $clientId): array {
                 $client = $this->store->client($clientId);
@@ -431,6 +501,9 @@ final class OAuthServer
                     return ['consume' => false, 'result' => $this->error('invalid_target', 400)];
                 }
 
+                if (trim((string) ($record['grant_id'] ?? '')) === '') {
+                    $record['grant_id'] = $this->secureToken('codi_grant', 16);
+                }
                 $record['resource'] = $this->profile->primaryEndpoint();
                 return [
                     'consume' => true,
@@ -442,6 +515,16 @@ final class OAuthServer
         }
 
         if (!is_array($result)) {
+            if ($signedGrantId !== null) {
+                try {
+                    $this->store->revokeGrant($signedGrantId, self::REFRESH_TOKEN_TTL);
+                } catch (\Throwable) {
+                    return $this->error('server_error', 503, 'OAuth credential storage is unavailable.');
+                }
+            }
+            return $this->error('invalid_grant', 400);
+        }
+        if (!empty($result['replay_detected'])) {
             return $this->error('invalid_grant', 400);
         }
         if (!isset($result['issue']) || !is_array($result['issue'])) {
@@ -457,6 +540,7 @@ final class OAuthServer
         $accessHash = $this->hash($accessToken);
         $record = [
             'client_id' => $clientId,
+            'grant_id' => trim((string) ($source['grant_id'] ?? '')) !== '' ? (string) $source['grant_id'] : $this->secureToken('codi_grant', 16),
             'user_id' => (int) ($source['user_id'] ?? 0),
             'resource' => (string) ($source['resource'] ?? $this->profile->primaryEndpoint()),
             'resource_key' => $this->profile->resourceKey(),
@@ -479,7 +563,7 @@ final class OAuthServer
             $this->store->saveAccessToken($accessHash, $record, self::ACCESS_TOKEN_TTL);
             $accessSaved = true;
             if ($withRefresh) {
-                $refreshToken = $this->secureToken('codi_rt', 32);
+                $refreshToken = $this->secureRefreshToken((string) $record['grant_id']);
                 $refreshHash = $this->hash($refreshToken);
                 $this->store->saveRefreshToken($refreshHash, $record, self::REFRESH_TOKEN_TTL);
                 $refreshSaved = true;
@@ -531,7 +615,7 @@ final class OAuthServer
         return in_array('mcp', $requested, true) ? $requested : null;
     }
 
-    private function validRedirectUri(string $uri): bool
+    private function validRedirectUri(string $uri, string $applicationType): bool
     {
         $parts = parse_url($uri);
         if (!is_array($parts) || isset($parts['fragment']) || isset($parts['user']) || isset($parts['pass'])) {
@@ -544,12 +628,78 @@ final class OAuthServer
             return true;
         }
 
-        return $scheme === 'http' && in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true);
+        return $applicationType === 'native'
+            && $scheme === 'http'
+            && in_array($host, ['localhost', '127.0.0.1', '::1', '[::1]'], true);
     }
 
     private function secureToken(string $prefix, int $bytes): string
     {
         return $prefix . '_' . rtrim(strtr(base64_encode(random_bytes($bytes)), '+/', '-_'), '=');
+    }
+
+    private function secureRefreshToken(string $grantId): string
+    {
+        $payload = $this->base64UrlEncode(json_encode(array(
+            'g' => $grantId,
+            'r' => $this->base64UrlEncode(random_bytes(24)),
+        ), JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+        $signature = hash_hmac('sha256', $payload, $this->refreshSigningKey(), true);
+        return 'codi_rt1_' . $payload . '.' . $this->base64UrlEncode($signature);
+    }
+
+    private function refreshGrantId(string $token): ?string
+    {
+        if (!str_starts_with($token, 'codi_rt1_')) {
+            return null;
+        }
+        $encoded = substr($token, strlen('codi_rt1_'));
+        $parts = explode('.', $encoded);
+        if (count($parts) !== 2 || $parts[0] === '' || $parts[1] === '') {
+            return null;
+        }
+        $signature = $this->base64UrlDecode($parts[1]);
+        if ($signature === null) {
+            return null;
+        }
+        $expected = hash_hmac('sha256', $parts[0], $this->refreshSigningKey(), true);
+        if (!hash_equals($expected, $signature)) {
+            return null;
+        }
+        $json = $this->base64UrlDecode($parts[0]);
+        $payload = $json === null ? null : json_decode($json, true);
+        $grantId = is_array($payload) && is_string($payload['g'] ?? null) ? trim((string) $payload['g']) : '';
+        return preg_match('/^codi_grant_[A-Za-z0-9_-]{20,}$/', $grantId) ? $grantId : null;
+    }
+
+    private function refreshSigningKey(): string
+    {
+        if (!function_exists('wp_salt')) {
+            throw new \RuntimeException('WordPress authentication salts are unavailable for OAuth refresh-token integrity.');
+        }
+        $salt = (string) wp_salt('auth');
+        if ($salt === '') {
+            throw new \RuntimeException('WordPress authentication salt is empty.');
+        }
+        return hash_hmac('sha256', 'codi-mcp-refresh|' . $this->profile->resourceKey(), $salt, true);
+    }
+
+    private function base64UrlEncode(string $value): string
+    {
+        return rtrim(strtr(base64_encode($value), '+/', '-_'), '=');
+    }
+
+    private function base64UrlDecode(string $value): ?string
+    {
+        if ($value === '' || preg_match('/[^A-Za-z0-9_-]/', $value)) {
+            return null;
+        }
+        $padding = strlen($value) % 4;
+        if ($padding > 0) {
+            $value .= str_repeat('=', 4 - $padding);
+        }
+        $decoded = base64_decode(strtr($value, '-_', '+/'), true);
+        return is_string($decoded) ? $decoded : null;
     }
 
     private function hash(string $value): string

@@ -17,7 +17,6 @@ final class CoreUploadCapabilityServiceTest extends TestCase
 
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         $this->rootDirectory = rtrim(codi_mcp_test_temp_dir(), DIRECTORY_SEPARATOR)
             . DIRECTORY_SEPARATOR
             . 'codi-mcp-upload-test-'
@@ -206,7 +205,7 @@ final class CoreUploadCapabilityServiceTest extends TestCase
         ));
         $this->assertFalse($result instanceof \WP_Error);
         $this->assertSame('PUT', (string) ($result['upload']['method'] ?? ''));
-        $this->assertTrue(str_contains((string) ($result['instruction'] ?? ''), 'Do not send plugin bytes through MCP'));
+        $this->assertTrue(str_contains((string) ($result['instruction'] ?? ''), 'plugin-install'));
 
         [$purpose, $uploadId, $token] = $this->capabilityParts((string) ($result['upload']['url'] ?? ''));
         $stream = $this->stream($data);
@@ -233,7 +232,7 @@ final class CoreUploadCapabilityServiceTest extends TestCase
         $this->assertFalse($result instanceof \WP_Error);
         $this->assertSame('PUT', (string) ($result['upload']['method'] ?? ''));
         $this->assertSame('application/zip', (string) ($result['upload']['content_type'] ?? ''));
-        $this->assertTrue(str_contains((string) ($result['instruction'] ?? ''), 'Do not send theme bytes through MCP'));
+        $this->assertTrue(str_contains((string) ($result['instruction'] ?? ''), 'theme-install'));
 
         [$purpose, $uploadId, $token] = $this->capabilityParts((string) ($result['upload']['url'] ?? ''));
         $stream = $this->stream($data);

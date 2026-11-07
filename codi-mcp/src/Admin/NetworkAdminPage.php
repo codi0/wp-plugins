@@ -5,6 +5,7 @@ namespace CodiMcp\Admin;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\PackageAvailabilityPolicy;
 use CodiMcp\Auth\OAuthProfile;
+use CodiMcp\Auth\OAuthServer;
 
 final class NetworkAdminPage
 {
@@ -13,16 +14,18 @@ final class NetworkAdminPage
 
     private PackageAvailabilityPolicy $availability;
     private OAuthProfile $profile;
+    private OAuthServer $oauthServer;
 
     /** @var AbilityPackage[] */
     private array $packages;
 
     /** @param AbilityPackage[] $packages */
-    public function __construct(PackageAvailabilityPolicy $availability, array $packages, OAuthProfile $profile)
+    public function __construct(PackageAvailabilityPolicy $availability, array $packages, OAuthProfile $profile, OAuthServer $oauthServer)
     {
         $this->availability = $availability;
         $this->packages = array_values($packages);
         $this->profile = $profile;
+        $this->oauthServer = $oauthServer;
     }
 
     public function registerMenu(): void
@@ -71,6 +74,27 @@ final class NetworkAdminPage
         }
     }
 
+    public function revokeOAuthClient(): void
+    {
+        if (!$this->canManage()) {
+            if (function_exists('wp_die')) {
+                wp_die('You do not have permission to manage Codi MCP network settings.');
+            }
+            return;
+        }
+        $clientId = isset($_POST['client_id']) ? trim((string) sanitize_text_field(wp_unslash($_POST['client_id']))) : '';
+        if ($clientId === '') {
+            $this->redirect(array('error' => 'oauth'));
+            return;
+        }
+        if (function_exists('check_admin_referer')) {
+            check_admin_referer('codi_mcp_revoke_network_oauth_client_' . $clientId);
+        }
+        $this->redirect($this->oauthServer->revokeClient($clientId)
+            ? array('updated' => 'oauth')
+            : array('error' => 'oauth'));
+    }
+
     public function render(): void
     {
         if (!$this->canManage()) {
@@ -79,10 +103,10 @@ final class NetworkAdminPage
 
         echo '<div class="wrap"><h1>Codi MCP — Network</h1>';
         if (!empty($_GET['error'])) {
-            echo '<div class="notice notice-error"><p>Network package policy could not be saved. No persisted change was confirmed.</p></div>';
+            echo '<div class="notice notice-error"><p>' . (($_GET['error'] ?? '') === 'oauth' ? 'The network OAuth client could not be disconnected.' : 'Network package policy could not be saved. No persisted change was confirmed.') . '</p></div>';
         }
         if (!empty($_GET['updated'])) {
-            echo '<div class="notice notice-success is-dismissible"><p>Network package policy updated.</p></div>';
+            echo '<div class="notice notice-success is-dismissible"><p>' . (($_GET['updated'] ?? '') === 'oauth' ? 'Network OAuth client disconnected and its active credentials revoked.' : 'Network package policy updated.') . '</p></div>';
         }
 
         echo '<p>Control bundled package policy across the multisite network. The network endpoint is a separate MCP resource from every site endpoint, including the main site.</p>';
@@ -90,6 +114,8 @@ final class NetworkAdminPage
         $this->row('Network MCP endpoint', $this->mcpEndpoint());
         $this->row('Main site ID', (string) $this->mainSiteId());
         echo '</tbody></table>';
+
+        $this->renderOAuthClients();
 
         echo '<form method="post" action="' . $this->escape($this->saveUrl()) . '" style="margin-top:24px">';
         if (function_exists('wp_nonce_field')) {
@@ -121,6 +147,35 @@ final class NetworkAdminPage
             echo '<p><button type="submit">Save network package policy</button></p>';
         }
         echo '</form></div>';
+    }
+
+    private function renderOAuthClients(): void
+    {
+        $clients = $this->oauthServer->clients();
+        echo '<h2>Connected network OAuth clients</h2>';
+        if ($clients === array()) {
+            echo '<p>No OAuth clients are currently registered for the network endpoint.</p>';
+            return;
+        }
+        echo '<p>Disconnecting a client invalidates its network authorization codes, refresh tokens, and access tokens immediately.</p>';
+        echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Client</th><th>Last used</th><th style="width:120px">Action</th></tr></thead><tbody>';
+        foreach ($clients as $client) {
+            $clientId = trim((string) ($client['client_id'] ?? ''));
+            if ($clientId === '') {
+                continue;
+            }
+            $lastUsed = (int) ($client['last_used_at'] ?? 0);
+            $lastUsedLabel = $lastUsed > 0
+                ? (function_exists('date_i18n') ? (string) date_i18n('Y-m-d H:i:s', $lastUsed) : gmdate('Y-m-d H:i:s', $lastUsed) . ' UTC')
+                : 'Never';
+            echo '<tr><td><strong>' . $this->escape((string) ($client['client_name'] ?? 'OAuth client')) . '</strong><br><code>' . $this->escape($clientId) . '</code></td><td>' . $this->escape($lastUsedLabel) . '</td><td>';
+            echo '<form method="post" action="' . $this->escape($this->revokeUrl()) . '"><input type="hidden" name="client_id" value="' . $this->escapeAttr($clientId) . '">';
+            if (function_exists('wp_nonce_field')) {
+                wp_nonce_field('codi_mcp_revoke_network_oauth_client_' . $clientId);
+            }
+            echo '<button type="submit" class="button">Disconnect</button></form></td></tr>';
+        }
+        echo '</tbody></table>';
     }
 
     private function description(string $key, string $state): string
@@ -183,6 +238,21 @@ final class NetworkAdminPage
         return function_exists('network_admin_url')
             ? (string) network_admin_url('edit.php?action=' . self::SAVE_ACTION)
             : '';
+    }
+
+    private function revokeUrl(): string
+    {
+        return function_exists('network_admin_url')
+            ? (string) network_admin_url('edit.php?action=codi_mcp_revoke_network_oauth_client')
+            : '';
+    }
+
+    private function redirect(array $query): void
+    {
+        if (function_exists('wp_safe_redirect')) {
+            wp_safe_redirect($this->pageUrl($query));
+            exit;
+        }
     }
 
     private function row(string $label, string $value): void

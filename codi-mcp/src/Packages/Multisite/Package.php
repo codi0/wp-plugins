@@ -77,7 +77,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('sites'), array(
             'label' => 'List accessible network sites',
-            'description' => 'List accessible sites and their site_id values. Use this when the target site is not already known. Never guess or implicitly default a site_id; reuse a known site_id.',
+            'description' => 'List accessible sites and IDs. Use only when the target ID is unknown.',
             'category' => $this->category(),
             'input_schema' => $this->emptyInputSchema(),
             'output_schema' => $this->sitesOutputSchema(),
@@ -88,7 +88,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('site-abilities'), array(
             'label' => 'List target-site abilities',
-            'description' => 'Discover exposed abilities and input schemas for one explicit site. Use this only when the required ability or its input is not already known for that site, or when the catalogue may have changed. Pass search whenever you can describe the capability you need to keep the response small; each whitespace-separated search term must match somewhere in the ability name or description, so terms do not need to be adjacent. Omit search only when a full catalogue is genuinely useful. Reuse previously returned descriptors instead of calling this before every site-call.',
+            'description' => 'Find a site\'s exposed abilities by name or purpose. Prefer search; exact names win, otherwise all terms must match. Reuse results.',
             'category' => $this->category(),
             'input_schema' => $this->siteInputSchema(),
             'output_schema' => $this->abilitiesOutputSchema(),
@@ -99,7 +99,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('site-call'), array(
             'label' => 'Call target-site ability',
-            'description' => 'Execute a known ability on one explicit site. Use this directly when site_id, ability name, and required inputs are already known; do not call site-abilities first. The target site\'s exposure policy, input validation, and permission callback remain authoritative.',
+            'description' => 'Run a known ability on an explicit site with arguments matching its input schema.',
             'category' => $this->category(),
             'input_schema' => $this->callInputSchema(),
             'output_schema' => $this->callOutputSchema(),
@@ -172,6 +172,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
             'properties' => array(
                 'site_id' => array('type' => 'integer', 'minimum' => 1),
                 'search' => array('type' => 'string', 'maxLength' => 100),
+                'detail' => array('type' => 'string', 'enum' => array('auto', 'summary', 'schema'), 'default' => 'auto', 'description' => 'Auto includes input schemas for a single match and omits them for multiple matches. Use schema or summary to force a view.'),
             ),
             'required' => array('site_id'),
         );
@@ -216,6 +217,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
                 'idempotent' => array('type' => 'boolean'),
             )),
         ));
+        $descriptor['required'] = array('name', 'description', 'annotations');
         return $this->strictObject(array(
             'abilities' => array('type' => 'array', 'items' => $descriptor),
         ));
@@ -230,7 +232,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
     private function jsonValueSchema(): array
     {
-        return array('type' => array('object', 'array', 'string', 'number', 'integer', 'boolean', 'null'));
+        return array('type' => array('object', 'array', 'string', 'number', 'boolean', 'null'));
     }
 
     private function strictObject(array $properties): array

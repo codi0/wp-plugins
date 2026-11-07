@@ -3,6 +3,7 @@
 namespace CodiMcp\Admin;
 
 use CodiMcp\Auth\OAuthProfile;
+use CodiMcp\Auth\OAuthServer;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\PackageAvailabilityPolicy;
 use CodiMcp\Exposure\ExposurePolicy;
@@ -13,6 +14,7 @@ final class AdminPage
 
     private ExposurePolicy $exposure;
     private OAuthProfile $profile;
+    private OAuthServer $oauthServer;
     private PackageAvailabilityPolicy $availability;
 
     /** @var AbilityPackage[] */
@@ -22,11 +24,13 @@ final class AdminPage
     public function __construct(
         ExposurePolicy $exposure,
         OAuthProfile $profile,
+        OAuthServer $oauthServer,
         PackageAvailabilityPolicy $availability,
         array $packages
     ) {
         $this->exposure = $exposure;
         $this->profile = $profile;
+        $this->oauthServer = $oauthServer;
         $this->availability = $availability;
         $this->packages = array_values($packages);
     }
@@ -81,6 +85,28 @@ final class AdminPage
         $this->redirect(array('updated' => 'packages'));
     }
 
+    public function revokeOAuthClient(): void
+    {
+        if (!$this->canManage()) {
+            if (function_exists('wp_die')) {
+                wp_die('You do not have permission to manage Codi MCP.');
+            }
+            return;
+        }
+
+        $clientId = isset($_POST['client_id']) ? trim((string) sanitize_text_field(wp_unslash($_POST['client_id']))) : '';
+        if ($clientId === '') {
+            $this->redirect(array('error' => 'oauth'));
+            return;
+        }
+        if (function_exists('check_admin_referer')) {
+            check_admin_referer('codi_mcp_revoke_oauth_client_' . $clientId);
+        }
+        $this->redirect($this->oauthServer->revokeClient($clientId)
+            ? array('updated' => 'oauth')
+            : array('error' => 'oauth'));
+    }
+
     public function render(): void
     {
         if (!$this->canManage()) {
@@ -102,11 +128,15 @@ final class AdminPage
             echo '<div class="notice notice-error"><p>Ability exposure could not be saved. No persisted change was confirmed.</p></div>';
         } elseif (($_GET['error'] ?? '') === 'packages') {
             echo '<div class="notice notice-error"><p>Site package availability could not be saved. No persisted change was confirmed.</p></div>';
+        } elseif (($_GET['error'] ?? '') === 'oauth') {
+            echo '<div class="notice notice-error"><p>The OAuth client could not be disconnected.</p></div>';
         }
         if (($_GET['updated'] ?? '') === 'exposure') {
             echo '<div class="notice notice-success is-dismissible"><p>Ability exposure updated. Reconnect or rescan the MCP client to refresh its tool catalogue.</p></div>';
         } elseif (($_GET['updated'] ?? '') === 'packages') {
             echo '<div class="notice notice-success is-dismissible"><p>Site package availability updated.</p></div>';
+        } elseif (($_GET['updated'] ?? '') === 'oauth') {
+            echo '<div class="notice notice-success is-dismissible"><p>OAuth client disconnected and its active credentials revoked.</p></div>';
         }
 
         echo '<p>Codi MCP registers a dedicated site-local server through the official WordPress MCP Adapter. Package availability and ability exposure are separate controls.</p>';
@@ -120,6 +150,8 @@ final class AdminPage
             $this->row('Network-managed abilities', (string) $managedCount);
         }
         echo '</tbody></table>';
+
+        $this->renderOAuthClients();
 
         $this->renderDelegatedPackages();
 
@@ -202,6 +234,45 @@ final class AdminPage
             echo '<p><button type="submit">Save site packages</button></p>';
         }
         echo '</form>';
+    }
+
+    private function renderOAuthClients(): void
+    {
+        $clients = $this->oauthServer->clients();
+        echo '<h2>Connected OAuth clients</h2>';
+        if ($clients === array()) {
+            echo '<p>No OAuth clients are currently registered for this site.</p>';
+            return;
+        }
+
+        echo '<p>Disconnecting a client invalidates its authorization codes, refresh tokens, and access tokens immediately.</p>';
+        echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th>Client</th><th>Callback hosts</th><th>Last used</th><th style="width:120px">Action</th></tr></thead><tbody>';
+        foreach ($clients as $client) {
+            $clientId = trim((string) ($client['client_id'] ?? ''));
+            if ($clientId === '') {
+                continue;
+            }
+            $hosts = array();
+            foreach ((array) ($client['redirect_uris'] ?? array()) as $uri) {
+                $host = parse_url((string) $uri, PHP_URL_HOST);
+                if (is_string($host) && $host !== '') {
+                    $hosts[] = strtolower($host);
+                }
+            }
+            $hosts = array_values(array_unique($hosts));
+            $lastUsed = (int) ($client['last_used_at'] ?? 0);
+            $lastUsedLabel = $lastUsed > 0
+                ? (function_exists('date_i18n') ? (string) date_i18n('Y-m-d H:i:s', $lastUsed) : gmdate('Y-m-d H:i:s', $lastUsed) . ' UTC')
+                : 'Never';
+            echo '<tr><td><strong>' . $this->escape((string) ($client['client_name'] ?? 'OAuth client')) . '</strong><br><code>' . $this->escape($clientId) . '</code></td>';
+            echo '<td>' . $this->escape($hosts === array() ? '—' : implode(', ', $hosts)) . '</td><td>' . $this->escape($lastUsedLabel) . '</td><td>';
+            echo '<form method="post" action="' . $this->escape($this->adminPostUrl()) . '"><input type="hidden" name="action" value="codi_mcp_revoke_oauth_client"><input type="hidden" name="client_id" value="' . $this->escapeAttr($clientId) . '">';
+            if (function_exists('wp_nonce_field')) {
+                wp_nonce_field('codi_mcp_revoke_oauth_client_' . $clientId);
+            }
+            echo '<button type="submit" class="button">Disconnect</button></form></td></tr>';
+        }
+        echo '</tbody></table>';
     }
 
     /** @return AbilityPackage[] */

@@ -47,6 +47,10 @@ final class QueryPolicy
         if ($backtickError instanceof \WP_Error) {
             return $backtickError;
         }
+        $sensitiveIdentifierError = $this->validateSensitiveIdentifiers($sql);
+        if ($sensitiveIdentifierError instanceof \WP_Error) {
+            return $sensitiveIdentifierError;
+        }
 
         $sql = $this->stripOptionalTrailingSemicolon($sql);
         if (strpos($sql, ';') !== false) {
@@ -90,9 +94,6 @@ final class QueryPolicy
         }
         if (preg_match('/\b(?:INFORMATION_SCHEMA|PERFORMANCE_SCHEMA|MYSQL|SYS)\s*\./i', $masked)) {
             return $this->error('codi_mcp_db_query_system_schema', 'Queries against server/system schemas are not allowed.');
-        }
-        if (preg_match('/\b[A-Za-z0-9_$]*(?:PASS(?:WORD)?|PASSWD|PASSWORD_HASH|SECRET|TOKEN|API_KEY|API_SECRET|PRIVATE_KEY|AUTH_KEY|ACTIVATION_KEY|SESSION|CREDENTIAL|LICENSE_KEY|CONSUMER_SECRET|WEBHOOK_SECRET|SIGNING_KEY|ENCRYPTION_KEY)[A-Za-z0-9_$]*\b/i', $masked)) {
-            return $this->error('codi_mcp_db_query_sensitive_identifier', 'sql references a protected credential-like identifier.');
         }
         if (preg_match('/(?<![A-Za-z0-9_$])(?:0x[0-9A-Fa-f]+|0b[01]+|(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)(?![A-Za-z0-9_$])/i', $masked)) {
             return $this->error('codi_mcp_db_query_numeric_literal', 'Embedded numeric literals are not allowed; pass values through params placeholders.');
@@ -203,6 +204,18 @@ final class QueryPolicy
                 return $this->error('codi_mcp_db_query_identifier', 'Backtick identifiers may contain only letters, numbers, underscore, dollar sign, and hyphen.');
             }
             $offset = $end + 1;
+        }
+        return true;
+    }
+
+    private function validateSensitiveIdentifiers(string $sql)
+    {
+        preg_match_all('/`([^`]+)`|(?<![A-Za-z0-9_$-])([A-Za-z_][A-Za-z0-9_$-]*)(?![A-Za-z0-9_$-])/', $sql, $matches, PREG_SET_ORDER);
+        foreach ((array) $matches as $match) {
+            $identifier = (string) (($match[1] ?? '') !== '' ? $match[1] : ($match[2] ?? ''));
+            if ($identifier !== '' && $this->isSensitiveIdentifier($identifier)) {
+                return $this->error('codi_mcp_db_query_sensitive_identifier', 'sql references a protected credential-like identifier.');
+            }
         }
         return true;
     }
@@ -352,7 +365,12 @@ final class QueryPolicy
 
     private function isSensitiveColumn(string $column): bool
     {
-        return (bool) preg_match('/(?:^|_)(?:pass(?:word)?|passwd|password_hash|secret|token|api_key|api_secret|private_key|client_secret|access_token|refresh_token|auth_key|activation_key|session|credential|license_key|consumer_secret|webhook_secret|signing_key|encryption_key)(?:$|_)/i', $column);
+        return $this->isSensitiveIdentifier($column);
+    }
+
+    private function isSensitiveIdentifier(string $identifier): bool
+    {
+        return (bool) preg_match('/(?:^|_)(?:pass(?:word)?|passwd|password_hash|secret|token|api_key|api_secret|private_key|client_secret|access_token|refresh_token|auth_key|activation_key|session|credential|license_key|consumer_secret|webhook_secret|signing_key|encryption_key)(?:$|_)/i', $identifier);
     }
 
     private function isKeyColumn(string $column): bool

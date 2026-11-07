@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CodiMcp\Packages\Multisite;
 
 use CodiMcp\Core\PackageRuntime;
+use CodiMcp\Core\Abilities\SchemaPresentation;
 
 final class LocalAbilityRuntime
 {
@@ -30,7 +31,7 @@ final class LocalAbilityRuntime
             $items[] = array(
                 'name' => $abilityName,
                 'description' => (string) $descriptor['description'],
-                'input_schema' => $descriptor['input_schema'],
+                'input_schema' => SchemaPresentation::normalize($descriptor['input_schema']),
                 'annotations' => array(
                     'readonly' => (bool) ($annotations['readonly'] ?? false),
                     'destructive' => (bool) ($annotations['destructive'] ?? false),

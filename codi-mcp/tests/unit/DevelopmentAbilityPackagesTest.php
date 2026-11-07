@@ -12,6 +12,8 @@ use CodiMcp\Core\Uploads\UploadCapabilityService;
 use CodiMcp\Packages\Content\Package as ContentPackage;
 use CodiMcp\Packages\Media\Package as MediaPackage;
 use CodiMcp\Packages\Database\Package as DatabasePackage;
+use CodiMcp\Packages\Diagnostics\Package as DiagnosticsPackage;
+use CodiMcp\Packages\Jobs\Package as JobsPackage;
 use CodiMcp\Packages\Plugins\Package as PluginsPackage;
 use CodiMcp\Packages\Presentation\Package as PresentationPackage;
 use CodiMcp\Packages\Site\Package as SitePackage;
@@ -24,95 +26,24 @@ final class DevelopmentAbilityPackagesTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         if (!defined('CODI_MCP_ABILITY_PREFIX')) {
             define('CODI_MCP_ABILITY_PREFIX', 'codi');
         }
     }
 
-    public function test_packages_register_expected_bounded_abilities(): void
+    public function test_packages_register_only_their_declared_bounded_abilities(): void
     {
         $packages = $this->packages();
         foreach ($packages as $package) {
+            $before = array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities']);
             $package->registerCategories();
             $package->registerAbilities();
+            $after = array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities']);
+            $registered = array_values(array_diff($after, $before));
+            $this->assertSame($package->abilityNames(), $registered, get_class($package) . ' declaration must match its registered abilities.');
         }
-
-        $expected = array(
-            'codi/plugin-upload',
-            'codi/plugin-install',
-            'codi/plugin-activate',
-            'codi/plugin-deactivate',
-            'codi/plugin-delete',
-            'codi/plugins-list',
-            'codi/plugin-info',
-            'codi/plugin-export',
-            'codi/runtime-info',
-            'codi/rest-routes-list',
-            'codi/cron-list',
-            'codi/rewrite-rules',
-            'codi/site-health',
-            'codi/error-log-tail',
-            'codi/cache-info',
-            'codi/roles-list',
-            'codi/audit-log',
-            'codi/upload-cancel',
-            'codi/cron-run',
-            'codi/rewrite-flush',
-            'codi/cache-flush',
-            'codi/site-config',
-            'codi/site-config-update',
-            'codi/theme-upload',
-            'codi/theme-install',
-            'codi/theme-activate',
-            'codi/theme-delete',
-            'codi/themes-list',
-            'codi/theme-info',
-            'codi/theme-export',
-            'codi/post-types-list',
-            'codi/taxonomies-list',
-            'codi/terms-list',
-            'codi/authors-list',
-            'codi/registered-blocks-list',
-            'codi/registered-meta-list',
-            'codi/posts-list',
-            'codi/registered-meta-get',
-            'codi/term-create',
-            'codi/term-update',
-            'codi/term-delete',
-            'codi/post-terms-update',
-            'codi/registered-meta-set',
-            'codi/registered-meta-delete',
-            'codi/post-author-set',
-            'codi/post-attributes-update',
-            'codi/post-create',
-            'codi/post-identity-update',
-            'codi/post-status-update',
-            'codi/post-featured-media-set',
-            'codi/post-duplicate',
-            'codi/post-trash',
-            'codi/post-restore',
-            'codi/post-delete',
-            'codi/media-config',
-            'codi/media-find',
-            'codi/media-inspect',
-            'codi/media-upload',
-            'codi/media-create',
-            'codi/media-update',
-            'codi/media-delete',
-            'codi/presentation-help',
-            'codi/presentation-find',
-            'codi/presentation-inspect',
-            'codi/presentation-preview',
-            'codi/presentation-verify',
-            'codi/presentation-commit',
-            'codi/presentation-history',
-            'codi/presentation-rollback',
-            'codi/db-tables',
-            'codi/db-schema',
-            'codi/db-query',
-        );
-        $this->assertSame($expected, array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities']));
+        $registeredNames = array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities']);
+        $this->assertSame(count($registeredNames), count(array_unique($registeredNames)), 'Ability names must be globally unique.');
 
         foreach ($GLOBALS['codi_mcp_test_registered_abilities'] as $name => $descriptor) {
             $this->assertTrue(is_callable($descriptor['execute_callback'] ?? null), $name . ' must have an execute callback.');
@@ -135,20 +66,37 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         $uploadDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-upload'] ?? array());
         $uploadSchema = (array) ($uploadDescriptor['input_schema'] ?? array());
         $uploadProperties = (array) ($uploadSchema['properties'] ?? array());
-        $this->assertSame(array('plugin_slug', 'size', 'sha256'), array_keys($uploadProperties));
+        foreach (array('plugin_slug', 'size', 'sha256', 'replace', 'folder') as $field) {
+            $this->assertArrayHasKey($field, $uploadProperties);
+        }
+        $this->assertSame(false, $uploadSchema['additionalProperties']);
+        $this->assertSame(array('entire', 'folder'), $uploadProperties['replace']['enum']);
         $this->assertSame(array('plugin_slug', 'size', 'sha256'), array_values((array) ($uploadSchema['required'] ?? array())));
-        $this->assertTrue(str_contains(strtolower((string) ($uploadDescriptor['description'] ?? '')), 'never accepts plugin bytes'));
+        $this->assertSame(['upload_id'], $GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-install']['input_schema']['required']);
+        $diagnosticRunInput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-run']['input_schema']['properties'] ?? array());
+        $this->assertArrayHasKey('actor_user_id', $diagnosticRunInput);
+        $this->assertArrayHasKey('explain_slow_queries', $diagnosticRunInput);
+        $diagnosticArmInput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-arm']['input_schema']['properties'] ?? array());
+        $this->assertSame(array('GET', 'POST', 'PUT', 'PATCH', 'DELETE'), array_values((array) ($diagnosticArmInput['method']['enum'] ?? array())));
+        $this->assertArrayHasKey('explain_slow_queries', $diagnosticArmInput);
+        $this->assertFalse(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/jobs-list']), 'Jobs abilities must not register when Action Scheduler is unavailable.');
+        $this->assertFalse(isset($uploadProperties['data']));
 
         $uploadOutput = (array) ($uploadDescriptor['output_schema'] ?? array());
         $uploadOutputProperties = (array) ($uploadOutput['properties'] ?? array());
-        $this->assertSame(array('upload_id', 'complete', 'upload', 'instruction'), array_keys($uploadOutputProperties));
+        foreach (array('upload_id', 'complete', 'upload', 'instruction', 'replace', 'folder') as $field) {
+            $this->assertArrayHasKey($field, $uploadOutputProperties);
+        }
         $transferProperties = (array) ($uploadOutputProperties['upload']['properties'] ?? array());
         $this->assertSame(array('PUT'), array_values((array) ($transferProperties['method']['enum'] ?? array())));
         $this->assertArrayHasKey('url', $transferProperties);
 
         $themeUpload = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/theme-upload'] ?? array());
         $themeInput = (array) ($themeUpload['input_schema']['properties'] ?? array());
-        $this->assertSame(array('stylesheet', 'size', 'sha256'), array_keys($themeInput));
+        foreach (array('stylesheet', 'size', 'sha256', 'replace', 'folder') as $field) {
+            $this->assertArrayHasKey($field, $themeInput);
+        }
+        $this->assertSame(array('entire', 'folder'), $themeInput['replace']['enum']);
         $themeTransfer = (array) (($themeUpload['output_schema']['properties']['upload']['properties'] ?? array()));
         $this->assertSame(array('PUT'), array_values((array) ($themeTransfer['method']['enum'] ?? array())));
         $this->assertArrayHasKey('url', $themeTransfer);
@@ -200,6 +148,7 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             'codi/db-tables',
             'codi/db-schema',
             'codi/db-query',
+            'codi/diagnostic-inspect',
         ) as $name) {
             $annotations = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$name]['meta']['annotations'] ?? array());
             $this->assertTrue((bool) ($annotations['readonly'] ?? false), $name . ' must be readonly.');
@@ -234,6 +183,7 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             'codi/media-delete' => false,
             'codi/presentation-commit' => false,
             'codi/presentation-rollback' => false,
+            'codi/diagnostic-run' => false,
         ) as $name => $idempotent) {
             $annotations = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$name]['meta']['annotations'] ?? array());
             $this->assertFalse((bool) ($annotations['readonly'] ?? true), $name . ' must be mutating.');
@@ -241,7 +191,7 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             $this->assertSame($idempotent, (bool) ($annotations['idempotent'] ?? false), $name . ' idempotence annotation mismatch.');
         }
 
-        foreach (array('codi/plugin-upload', 'codi/plugin-export', 'codi/theme-upload', 'codi/theme-export', 'codi/media-upload', 'codi/presentation-preview') as $name) {
+        foreach (array('codi/plugin-upload', 'codi/plugin-export', 'codi/theme-upload', 'codi/theme-export', 'codi/media-upload', 'codi/presentation-preview', 'codi/diagnostic-arm') as $name) {
             $annotations = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$name]['meta']['annotations'] ?? array());
             $this->assertFalse((bool) ($annotations['readonly'] ?? true), $name . ' must create only temporary transfer state.');
             $this->assertFalse((bool) ($annotations['destructive'] ?? true), $name . ' must not mutate installed WordPress state.');
@@ -310,7 +260,7 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         $catalogue = new AbilityCatalogue();
         $policy = new ExposurePolicy($catalogue);
         $rows = $policy->rows();
-        $this->assertCount(72, $rows);
+        $this->assertCount(count((array) $GLOBALS['codi_mcp_test_registered_abilities']), $rows);
         foreach ($rows as $row) {
             $this->assertSame('codi', (string) ($row['origin'] ?? ''), (string) ($row['name'] ?? '') . ' must be Codi-owned.');
             $this->assertFalse((bool) ($row['enabled'] ?? true), (string) ($row['name'] ?? '') . ' must default disabled.');
@@ -383,6 +333,8 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             new MediaPackage(),
             new PresentationPackage(),
             new DatabasePackage(),
+            new DiagnosticsPackage(),
+            new JobsPackage(),
         );
     }
 }

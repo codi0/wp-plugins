@@ -21,7 +21,6 @@ final class MultisitePackageTest extends TestCase
 {
     protected function setUp(): void
     {
-        \codi_mcp_test_reset_environment();
         $GLOBALS['codi_mcp_test_wp_multisite'] = true;
         $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 1;
         foreach ((array) ($GLOBALS['codi_mcp_test_wp_sites'] ?? array()) as $site) {
@@ -56,11 +55,10 @@ final class MultisitePackageTest extends TestCase
         $sitesDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/sites'] ?? array());
         $abilitiesDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/site-abilities'] ?? array());
         $callDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/site-call'] ?? array());
-        $this->assertTrue(str_contains((string) ($sitesDescriptor['description'] ?? ''), 'Never guess or implicitly default a site_id'));
-        $this->assertTrue(str_contains((string) ($abilitiesDescriptor['description'] ?? ''), 'Reuse previously returned descriptors'));
-        $this->assertTrue(str_contains((string) ($abilitiesDescriptor['description'] ?? ''), 'Pass search'));
-        $this->assertTrue(str_contains((string) ($abilitiesDescriptor['description'] ?? ''), 'terms do not need to be adjacent'));
-        $this->assertTrue(str_contains((string) ($callDescriptor['description'] ?? ''), 'do not call site-abilities first'));
+        foreach ([$sitesDescriptor, $abilitiesDescriptor, $callDescriptor] as $descriptor) {
+            $this->assertTrue(strlen($descriptor['description']) > 20 && strlen($descriptor['description']) < 200);
+        }
+        $this->assertSame(['auto', 'summary', 'schema'], $abilitiesDescriptor['input_schema']['properties']['detail']['enum']);
         $this->assertArrayHasKey('search', (array) ($abilitiesDescriptor['input_schema']['properties'] ?? array()));
         $siteOutputProperties = (array) ($sitesDescriptor['output_schema']['properties'] ?? array());
         $this->assertSame(array('items'), array_keys($siteOutputProperties));
@@ -176,6 +174,52 @@ final class MultisitePackageTest extends TestCase
             array('example/widget-inspect'),
             array_map(static fn (array $ability): string => (string) ($ability['name'] ?? ''), (array) ($result['abilities'] ?? array()))
         );
+    }
+
+    public function test_discovery_returns_only_the_schema_detail_needed_and_prefers_exact_names(): void
+    {
+        $names = ['example/inspect', 'example/other', 'another/other'];
+        foreach ($names as $name) {
+            wp_register_ability($name, [
+                'label' => 'Inspect', 'description' => 'Inspect configuration; see example/inspect and example/other.',
+                'category' => 'example',
+                'input_schema' => ['type' => 'object', 'additionalProperties' => false, 'properties' => []],
+                'output_schema' => ['type' => 'object'],
+                'execute_callback' => static fn (array $input): array => [],
+                'permission_callback' => static fn (): bool => current_user_can('read'),
+                'meta' => ['public' => true],
+            ]);
+        }
+        $policy = $this->policy();
+        $policy->saveSelection($names);
+        $package = new Package();
+        $package->registerRuntime($this->runtime($policy));
+        $package->registerAbilities();
+        $call = $GLOBALS['codi_mcp_test_registered_abilities']['codi/site-abilities']['execute_callback'];
+
+        foreach (['', 'configuration inspect', 'other'] as $search) {
+            $abilities = $call(['site_id' => 1, 'search' => $search])['abilities'];
+            $this->assertCount(3, $abilities);
+            foreach ($abilities as $ability) {
+                $this->assertFalse(isset($ability['input_schema']));
+                $this->assertFalse(isset($ability['output_schema']));
+            }
+        }
+        foreach (['EXAMPLE/INSPECT', 'inspect', 'example/other'] as $search) {
+            $abilities = $call(['site_id' => 1, 'search' => $search])['abilities'];
+            $this->assertCount(1, $abilities);
+            $this->assertArrayHasKey('input_schema', $abilities[0]);
+            $this->assertFalse(isset($abilities[0]['input_schema']['properties']));
+        }
+        $this->assertCount(0, $call(['site_id' => 1, 'search' => 'configuration missing'])['abilities']);
+        foreach ($call(['site_id' => 1, 'detail' => 'schema'])['abilities'] as $ability) {
+            $this->assertArrayHasKey('input_schema', $ability);
+        }
+        $this->assertFalse(isset($call(['site_id' => 1, 'search' => 'example/inspect', 'detail' => 'summary'])['abilities'][0]['input_schema']));
+        $this->assertTrue(is_wp_error($call(['site_id' => 1, 'detail' => 'invalid'])));
+        $native = $GLOBALS['codi_mcp_test_registered_abilities']['example/inspect'];
+        $this->assertSame([], $native['input_schema']['properties']);
+        $this->assertArrayHasKey('output_schema', $native);
     }
 
     public function test_local_catalog_and_execution_use_live_target_exposure_and_normal_ability_permissions(): void

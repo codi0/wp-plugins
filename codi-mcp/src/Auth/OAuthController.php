@@ -26,6 +26,11 @@ final class OAuthController
         return $this->responseFromPayload($this->server->token($this->params($request)));
     }
 
+    public function revoke($request = null)
+    {
+        return $this->responseFromPayload($this->server->revokeToken($this->params($request)));
+    }
+
     public function authorize($request = null)
     {
         $params = $this->params($request);
@@ -126,6 +131,7 @@ final class OAuthController
             . $warningHtml
             . '<p><strong>Signed in as:</strong> ' . $this->escape($this->userLabel($userId)) . '</p>'
             . '<p><strong>Resource:</strong> ' . $this->escape((string) ($prepared['resource'] ?? '')) . '</p>'
+            . '<p><strong>Callback:</strong> ' . $this->escape($this->callbackLabel((string) ($prepared['redirect_uri'] ?? ''))) . '</p>'
             . '<h2>Requested access</h2><ul>' . $scopeItems . '</ul>'
             . '<form method="post" action="' . $this->escape($this->profile->authorizationEndpoint()) . '">' . $hidden
             . '<button type="submit" name="decision" value="approve" style="margin-right:10px;padding:8px 14px">Approve</button>'
@@ -187,6 +193,18 @@ final class OAuthController
             }
         }
         return (string) $userId;
+    }
+
+    private function callbackLabel(string $redirectUri): string
+    {
+        $parts = parse_url($redirectUri);
+        if (!is_array($parts) || empty($parts['host'])) {
+            return $redirectUri;
+        }
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = (string) $parts['host'];
+        $port = isset($parts['port']) ? ':' . (int) $parts['port'] : '';
+        return ($scheme !== '' ? $scheme . '://' : '') . $host . $port;
     }
 
     private function requestMethod($request): string
