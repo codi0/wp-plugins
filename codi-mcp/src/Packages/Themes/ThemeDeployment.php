@@ -94,7 +94,7 @@ final class ThemeDeployment
             if (!$this->sourcePolicy->canCustomReplace('theme', $stylesheet, (string) $selection['replace'])) {
                 return new \WP_Error('codi_mcp_external_source', 'Installed external theme source cannot be replaced by an uploaded custom package. Use the native WordPress update path or mark the theme as managed in Codi MCP settings.');
             }
-            if ($selection['replace'] !== 'file') {
+            if ($selection['replace'] === 'entire') {
                 try {
                     $metadata['base_fingerprint'] = $this->fingerprints->directory($root);
                 } catch (\Throwable $error) {
@@ -112,6 +112,14 @@ final class ThemeDeployment
                 return $captured;
             }
             $metadata['replacement'] = $captured;
+            try {
+                $metadata['identity_file'] = 'style.css';
+                $metadata['identity_fingerprint'] = $this->fingerprints->file(
+                    rtrim((string) $target['root'], '/\\') . '/style.css'
+                );
+            } catch (\Throwable $error) {
+                return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+            }
         } else if ($selection['replace'] === 'file') {
             $target = $this->installedFileTarget($stylesheet, $selection['file']);
             if ($target instanceof \WP_Error) {
@@ -180,7 +188,33 @@ final class ThemeDeployment
                     if ($recovery instanceof \WP_Error) {
                         return $recovery;
                     }
-                } else {
+                } elseif ($mode === 'folder') {
+                    $selection = is_array($metadata['replacement'] ?? null) ? $metadata['replacement'] : array();
+                    $identity = $this->validateFolderIdentity($metadata, $root);
+                    if ($identity instanceof \WP_Error) {
+                        return $identity;
+                    }
+                    $recovery = $this->recoveries->createFolder(
+                        'theme',
+                        $stylesheet,
+                        $root,
+                        (string) ($selection['folder'] ?? ''),
+                        (string) ($selection['fingerprint'] ?? ''),
+                        (bool) ($selection['exists'] ?? false),
+                        array(
+                            'identity_file' => 'style.css',
+                            'identity_fingerprint' => (string) ($metadata['identity_fingerprint'] ?? ''),
+                            'before_version' => $this->themeVersion($stylesheet),
+                            'operation' => 'custom_replace',
+                        )
+                    );
+                    if ($recovery instanceof \WP_Error) {
+                        if (in_array($recovery->get_error_code(), array('codi_mcp_source_changed', 'codi_mcp_recovery_source_changed'), true)) {
+                            return new \WP_Error('codi_mcp_folder_conflict', 'The selected folder changed after upload creation. Create a fresh upload against its current contents.');
+                        }
+                        return $recovery;
+                    }
+                } elseif ($mode === 'entire') {
                     $expected = (string) ($metadata['base_fingerprint'] ?? '');
                     try {
                         $current = $this->fingerprints->directory($root);
@@ -206,7 +240,7 @@ final class ThemeDeployment
                 $target = $this->installedFolderTarget($stylesheet);
                 if ($target instanceof \WP_Error) {
                     if (is_array($recovery)) {
-                        $this->finalizeFailedMutation($target, $recovery, $root);
+                        $this->recoveries->abandon((string) $recovery['recovery_id']);
                     }
                     return $target;
                 }
@@ -222,7 +256,12 @@ final class ThemeDeployment
                 );
                 if ($result instanceof \WP_Error) {
                     if (is_array($recovery)) {
-                        $this->finalizeFailedMutation($result, $recovery, $root);
+                        $this->finalizeFailedFolderMutation(
+                            $result,
+                            $recovery,
+                            $root,
+                            (string) ($selection['folder'] ?? '')
+                        );
                     }
                     return $result;
                 }
@@ -279,21 +318,55 @@ final class ThemeDeployment
             } else {
                 $error = new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
                 if (is_array($recovery)) {
-                    $this->finalizeFailedMutation($error, $recovery, $root);
+                    if ($mode === 'folder') {
+                        $this->finalizeFailedFolderMutation(
+                            $error,
+                            $recovery,
+                            $root,
+                            (string) ($metadata['replacement']['folder'] ?? '')
+                        );
+                    } elseif ($mode === 'file') {
+                        $this->finalizeFailedFileMutation(
+                            $error,
+                            $recovery,
+                            $root,
+                            (string) ($metadata['replacement']['file'] ?? '')
+                        );
+                    } else {
+                        $this->finalizeFailedMutation($error, $recovery, $root);
+                    }
                 }
                 return $error;
             }
             if ($result instanceof \WP_Error) {
                 if (is_array($recovery)) {
-                    $this->finalizeFailedMutation($result, $recovery, $root);
+                    if ($mode === 'folder') {
+                        $this->finalizeFailedFolderMutation(
+                            $result,
+                            $recovery,
+                            $root,
+                            (string) ($metadata['replacement']['folder'] ?? '')
+                        );
+                    } elseif ($mode === 'file') {
+                        $this->finalizeFailedFileMutation(
+                            $result,
+                            $recovery,
+                            $root,
+                            (string) ($metadata['replacement']['file'] ?? '')
+                        );
+                    } else {
+                        $this->finalizeFailedMutation($result, $recovery, $root);
+                    }
                 }
                 return $result;
             }
             if (is_array($recovery)) {
                 try {
-                    $after = $mode === 'file'
-                        ? $this->fingerprints->file($root . '/' . (string) ($metadata['replacement']['file'] ?? ''))
-                        : $this->fingerprints->directory($root);
+                    $after = match ($mode) {
+                        'file' => $this->fingerprints->file($root . '/' . (string) ($metadata['replacement']['file'] ?? '')),
+                        'folder' => $this->folderFingerprint($root, (string) ($metadata['replacement']['folder'] ?? '')),
+                        default => $this->fingerprints->directory($root),
+                    };
                 } catch (\Throwable $error) {
                     return new \WP_Error('codi_mcp_recovery_required', 'Theme changed successfully but its post-change fingerprint could not be recorded. The recovery snapshot has been retained.', array('recovery_id' => $recovery['recovery_id']));
                 }
@@ -570,6 +643,9 @@ final class ThemeDeployment
             $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
             if (($record['metadata']['scope'] ?? '') === 'file') {
                 return $this->restoreFileCommittedUnlocked($record, $root, $siteIds);
+            }
+            if (($record['metadata']['scope'] ?? '') === 'folder') {
+                return $this->restoreFolderCommittedUnlocked($record, $root, $siteIds);
             }
             return $this->restoreCommittedUnlocked($record, $root, $siteIds);
         });
@@ -879,6 +955,142 @@ final class ThemeDeployment
         } catch (\Throwable) {
             $error->add_data(array('recovery_id' => (string) ($recovery['recovery_id'] ?? ''), 'recovery_scope' => 'code'));
         }
+    }
+
+    private function finalizeFailedFolderMutation(\WP_Error $error, array $recovery, string $root, string $relativeFolder): void
+    {
+        if ($error->get_error_code() === 'codi_mcp_folder_conflict') {
+            $this->recoveries->abandon((string) $recovery['recovery_id']);
+            return;
+        }
+        try {
+            $current = $this->folderFingerprint($root, $relativeFolder);
+            if (hash_equals((string) $recovery['before_fingerprint'], $current)) {
+                $this->recoveries->abandon((string) $recovery['recovery_id']);
+                return;
+            }
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $current, '');
+            if (is_array($committed)) {
+                $error->add_data(array('recovery_id' => $committed['recovery_id'], 'recovery_scope' => 'code'));
+            }
+        } catch (\Throwable) {
+            $error->add_data(array('recovery_id' => (string) ($recovery['recovery_id'] ?? ''), 'recovery_scope' => 'code'));
+        }
+    }
+
+    /** @return true|\WP_Error */
+    private function validateFolderIdentity(array $metadata, string $root): true|\WP_Error
+    {
+        $identityFile = (string) ($metadata['identity_file'] ?? '');
+        $expected = (string) ($metadata['identity_fingerprint'] ?? '');
+        if ($identityFile !== 'style.css' || !preg_match('/^[a-f0-9]{64}$/D', $expected)) {
+            return new \WP_Error('codi_mcp_bad_metadata', 'Folder replacement theme identity metadata is invalid.');
+        }
+        try {
+            $current = $this->fingerprints->file(rtrim($root, '/\\') . '/style.css');
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+        }
+        return hash_equals($expected, $current)
+            ? true
+            : new \WP_Error('codi_mcp_source_changed', 'Installed theme identity changed after upload creation. Create a fresh upload against the current source.');
+    }
+
+    private function folderFingerprint(string $root, string $relativeFolder): string
+    {
+        if (!ReplacementSelection::validFolder($relativeFolder)) {
+            throw new \RuntimeException('Folder recovery target is invalid.');
+        }
+        $path = rtrim($root, '/\\') . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativeFolder);
+        if (!file_exists($path) && !is_link($path)) {
+            return PackageFingerprint::absent();
+        }
+        return $this->fingerprints->directory($path);
+    }
+
+    private function restoreFolderCommittedUnlocked(array $record, string $root, array $siteIds)
+    {
+        $recoveryId = (string) ($record['recovery_id'] ?? '');
+        $relativeFolder = (string) ($record['metadata']['folder'] ?? '');
+        $originallyExisted = $record['metadata']['folder_existed'] ?? null;
+        if (!ReplacementSelection::validFolder($relativeFolder) || !is_bool($originallyExisted)) {
+            return new \WP_Error('codi_mcp_recovery_integrity', 'Folder recovery metadata is invalid.');
+        }
+
+        $identity = $this->validateFolderIdentity(
+            array(
+                'identity_file' => (string) ($record['metadata']['identity_file'] ?? ''),
+                'identity_fingerprint' => (string) ($record['metadata']['identity_fingerprint'] ?? ''),
+            ),
+            $root
+        );
+        if ($identity instanceof \WP_Error) {
+            return new \WP_Error('codi_mcp_restore_conflict', 'Installed theme identity has changed since this recovery point was created; restore was refused.');
+        }
+
+        $artifact = $this->recoveries->artifact($recoveryId, 'theme');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        try {
+            $current = $this->folderFingerprint($root, $relativeFolder);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+        }
+        if (!hash_equals((string) ($record['after_fingerprint'] ?? ''), $current)) {
+            return new \WP_Error('codi_mcp_restore_conflict', 'Selected theme folder has changed since this recovery point was created; restore was refused.');
+        }
+
+        $selection = array(
+            'root' => (string) realpath($root),
+            'folder' => $relativeFolder,
+            'exists' => true,
+            'fingerprint' => $current,
+        );
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+        $restored = $originallyExisted
+            ? $this->folderReplacement->replace(
+                $root,
+                $selection,
+                (string) $artifact['path'],
+                (string) ($record['identity'] ?? ''),
+                bin2hex(random_bytes(16)),
+                $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+            )
+            : $this->folderReplacement->removeFolder(
+                $root,
+                $selection,
+                bin2hex(random_bytes(16)),
+                $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+            );
+
+        if ($restored instanceof \WP_Error) {
+            if ($restored->get_error_code() === 'codi_mcp_folder_conflict') {
+                return new \WP_Error('codi_mcp_restore_conflict', 'Selected theme folder has changed since this recovery point was created; restore was refused.');
+            }
+            return $restored;
+        }
+
+        if (function_exists('wp_clean_themes_cache')) {
+            wp_clean_themes_cache(true);
+        }
+        $this->cleanThemeJsonResolverCache();
+        try {
+            $fingerprint = $this->folderFingerprint($root, $relativeFolder);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_restore_verification', $error->getMessage());
+        }
+        if (!hash_equals((string) ($record['before_fingerprint'] ?? ''), $fingerprint)) {
+            return new \WP_Error('codi_mcp_restore_verification', 'Restored theme folder does not match the recovery fingerprint.');
+        }
+        $this->recoveries->markRestored($recoveryId);
+        return array(
+            'stylesheet' => (string) ($record['identity'] ?? ''),
+            'version' => $this->themeVersion((string) ($record['identity'] ?? '')),
+            'restored' => true,
+            'recovery_id' => $recoveryId,
+            'recovery_scope' => 'code',
+        );
     }
 
     private function restoreFileCommittedUnlocked(array $record, string $root, array $siteIds)

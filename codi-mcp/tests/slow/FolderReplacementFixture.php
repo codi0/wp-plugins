@@ -50,8 +50,10 @@ namespace CodiMcpTest\Slow {
             ),
             'recovery' => array(
                 'test_handled_failures_at_each_move_boundary_restore_the_original_tree',
+                'test_move_failures_surface_sanitized_filesystem_reason',
                 'test_failed_installed_content_verification_restores_original_content',
                 'test_runtime_verification_must_succeed_before_folder_commit',
+                'test_folder_removal_rolls_back_when_runtime_verification_fails',
                 'test_failed_recovery_retains_backups_and_blocks_subsequent_deployments',
             ),
             'addition_recovery' => array(
@@ -64,7 +66,10 @@ namespace CodiMcpTest\Slow {
                 'test_plugin_upload_and_install_bind_the_folder_and_preserve_identity',
                 'test_theme_upload_and_install_share_folder_mechanics_without_changing_root_files',
                 'test_entrypoints_and_codi_self_replacement_are_rejected_at_upload_creation',
-                'test_custom_source_mutation_requires_managed_policy_and_fresh_package_source',
+                'test_custom_source_mutation_requires_managed_policy_and_selected_scope_freshness',
+                'test_folder_package_flows_and_recovery_are_scoped_to_the_selected_folder',
+                'test_folder_addition_recovery_restores_original_absence',
+                'test_folder_replacement_ignores_oversized_unrelated_package_content',
                 'test_native_update_requires_wordpress_advertised_update_and_restore_refuses_diverged_source',
             ),
             'file' => array(
@@ -210,6 +215,36 @@ namespace CodiMcpTest\Slow {
             }
         }
 
+        public function test_move_failures_surface_sanitized_filesystem_reason(): void
+        {
+            $move = static function (string $from, string $to): bool {
+                @trigger_error('rename(/private/source,/private/destination): Permission denied', E_USER_WARNING);
+                return false;
+            };
+
+            $runner = $this->runner($move);
+            $selection = $runner->capture($this->plugin, 'src/Module');
+            $before = $this->snapshot($this->plugin);
+            $result = $this->apply($runner, $selection, $this->zip(array('example/src/Module/new.php' => 'replacement')));
+            $this->assertTrue($result instanceof \WP_Error);
+            $message = $result->get_error_message();
+            $this->assertTrue(str_contains($message, 'Filesystem error: Permission denied'));
+            $this->assertFalse(str_contains($message, '/private/source'));
+            $this->assertFalse(str_contains($message, '/private/destination'));
+            $this->assertSame($before, $this->snapshot($this->plugin));
+
+            $runner = $this->runner($move);
+            $selection = $runner->captureFile($this->plugin, 'src/Module/old.php');
+            $result = $this->applyFile($runner, $selection, $this->zip(array('example/src/Module/old.php' => 'replacement')));
+            $this->assertTrue($result instanceof \WP_Error);
+            $message = $result->get_error_message();
+            $this->assertTrue(str_contains($message, 'Filesystem error: Permission denied'));
+            $this->assertFalse(str_contains($message, '/private/source'));
+            $this->assertFalse(str_contains($message, '/private/destination'));
+            $this->assertSame('original', file_get_contents($this->plugin . '/src/Module/old.php'));
+            $this->assertFalse(file_exists($this->wordpress . '/.maintenance'));
+        }
+
         public function test_failed_installed_content_verification_restores_original_content(): void
         {
             $moves = 0;
@@ -254,6 +289,34 @@ namespace CodiMcpTest\Slow {
             $this->assertSame('codi_mcp_folder_replace_failed', $result->get_error_code());
             $this->assertSame(1, $calls);
             $this->assertSame($before, $this->snapshot($this->plugin));
+            $this->assertFalse(file_exists($this->wordpress . '/.maintenance'));
+        }
+
+        public function test_folder_removal_rolls_back_when_runtime_verification_fails(): void
+        {
+            $runner = $this->runner();
+            $selection = $runner->capture($this->plugin, 'src/Module');
+            $before = $this->snapshot($this->plugin . '/src/Module');
+            $calls = 0;
+
+            $result = $runner->locked($this->plugin, function () use ($runner, $selection, &$calls) {
+                return $runner->removeFolder(
+                    $this->plugin,
+                    $selection,
+                    bin2hex(random_bytes(16)),
+                    function () use (&$calls) {
+                        ++$calls;
+                        $this->assertFalse(is_dir($this->plugin . '/src/Module'));
+                        $this->assertTrue(file_exists($this->wordpress . '/.maintenance'));
+                        return new \WP_Error('fixture_runtime_unhealthy', 'Fixture runtime verification failed.');
+                    }
+                );
+            });
+
+            $this->assertTrue($result instanceof \WP_Error);
+            $this->assertSame('codi_mcp_folder_remove_failed', $result->get_error_code());
+            $this->assertSame(1, $calls);
+            $this->assertSame($before, $this->snapshot($this->plugin . '/src/Module'));
             $this->assertFalse(file_exists($this->wordpress . '/.maintenance'));
         }
 
@@ -799,7 +862,7 @@ PHP;
             }
         }
 
-        public function test_custom_source_mutation_requires_managed_policy_and_fresh_package_source(): void
+        public function test_custom_source_mutation_requires_managed_policy_and_selected_scope_freshness(): void
         {
             (new PackageSourcePolicy())->saveManaged(array('theme:example-theme'));
             $service = new UploadCapabilityService(new UploadStore(2 * 1024 * 1024, $this->base . '/uploads-external'));
@@ -817,11 +880,134 @@ PHP;
             (new PackageSourcePolicy())->saveManaged(array('plugin:example', 'theme:example-theme'));
             [$deployment, $upload] = $this->uploaded('plugin', $this->zip(array('example/src/Module/new.php' => 'replacement')));
             $this->put($this->plugin . '/src/Other/live.php', 'intervening package edit');
-            $before = $this->snapshot($this->plugin);
+            $result = $deployment->install(array('upload_id' => $upload['upload_id']));
+            $this->assertFalse($result instanceof \WP_Error);
+            $this->assertSame('replacement', file_get_contents($this->plugin . '/src/Module/new.php'));
+            $this->assertSame('intervening package edit', file_get_contents($this->plugin . '/src/Other/live.php'));
+
+            [$deployment, $upload] = $this->uploaded('plugin', $this->zip(array('example/src/Module/next.php' => 'next')));
+            $this->put($this->plugin . '/src/Module/new.php', 'intervening selected-folder edit');
+            $result = $deployment->install(array('upload_id' => $upload['upload_id']));
+            $this->assertTrue($result instanceof \WP_Error);
+            $this->assertSame('codi_mcp_folder_conflict', $result->get_error_code());
+            $this->assertSame('intervening selected-folder edit', file_get_contents($this->plugin . '/src/Module/new.php'));
+
+            [$deployment, $upload] = $this->uploaded('plugin', $this->zip(array('example/src/Module/final.php' => 'final')));
+            $this->put($this->plugin . '/example.php', '<?php /* Plugin Name: Example; Version: 2 */');
             $result = $deployment->install(array('upload_id' => $upload['upload_id']));
             $this->assertTrue($result instanceof \WP_Error);
             $this->assertSame('codi_mcp_source_changed', $result->get_error_code());
-            $this->assertSame($before, $this->snapshot($this->plugin));
+
+            $themeRoot = get_theme_root() . '/example-theme';
+            $this->put($themeRoot . '/style.css', 'Theme Name: Example theme');
+            $this->put($themeRoot . '/assets/old.css', 'old');
+            $GLOBALS['codi_folder_test_themes'] = array('example-theme' => new class($themeRoot) {
+                public function __construct(private string $root) {}
+                public function get_stylesheet_directory(): string { return $this->root; }
+                public function get(string $field): string { return $field === 'Name' ? 'Example theme' : '1'; }
+            });
+            [$themeDeployment, $themeUpload] = $this->uploaded(
+                'theme',
+                $this->zip(array('example-theme/assets/new.css' => 'new')),
+                'assets'
+            );
+            $this->put($themeRoot . '/style.css', 'Theme Name: Example theme; Version: 2');
+            $themeResult = $themeDeployment->install(array('upload_id' => $themeUpload['upload_id']));
+            $this->assertTrue($themeResult instanceof \WP_Error);
+            $this->assertSame('codi_mcp_source_changed', $themeResult->get_error_code());
+        }
+
+        public function test_folder_package_flows_and_recovery_are_scoped_to_the_selected_folder(): void
+        {
+            [$pluginDeployment, $pluginUpload] = $this->uploaded(
+                'plugin',
+                $this->zip(array('example/src/Module/new.php' => 'plugin replacement'))
+            );
+            $this->put($this->plugin . '/src/Other/live.php', 'unrelated edit after upload');
+            $pluginResult = $pluginDeployment->install(array('upload_id' => $pluginUpload['upload_id']));
+            $this->assertFalse($pluginResult instanceof \WP_Error);
+            $this->assertTrue(!empty($pluginResult['recovery_id']));
+            $this->assertSame('plugin replacement', file_get_contents($this->plugin . '/src/Module/new.php'));
+            $this->assertFalse(file_exists($this->plugin . '/src/Module/old.php'));
+            $this->assertSame('unrelated edit after upload', file_get_contents($this->plugin . '/src/Other/live.php'));
+
+            $this->put($this->plugin . '/src/Other/live.php', 'unrelated edit after replacement');
+            $pluginRestore = $pluginDeployment->restore(array('recovery_id' => $pluginResult['recovery_id']));
+            $this->assertFalse($pluginRestore instanceof \WP_Error);
+            $this->assertSame('original', file_get_contents($this->plugin . '/src/Module/old.php'));
+            $this->assertSame('obsolete', file_get_contents($this->plugin . '/src/Module/obsolete.php'));
+            $this->assertFalse(file_exists($this->plugin . '/src/Module/new.php'));
+            $this->assertSame('unrelated edit after replacement', file_get_contents($this->plugin . '/src/Other/live.php'));
+
+            $themeRoot = get_theme_root() . '/example-theme';
+            $this->put($themeRoot . '/style.css', 'Theme Name: Example theme');
+            $this->put($themeRoot . '/assets/old.css', 'old');
+            $this->put($themeRoot . '/templates/index.html', 'unchanged template');
+            $GLOBALS['codi_folder_test_themes'] = array('example-theme' => new class($themeRoot) {
+                public function __construct(private string $root) {}
+                public function get_stylesheet_directory(): string { return $this->root; }
+                public function get(string $field): string { return $field === 'Name' ? 'Example theme' : '1'; }
+            });
+
+            [$themeDeployment, $themeUpload] = $this->uploaded(
+                'theme',
+                $this->zip(array('example-theme/assets/new.css' => 'theme replacement')),
+                'assets'
+            );
+            $this->put($themeRoot . '/templates/index.html', 'unrelated edit after upload');
+            $themeResult = $themeDeployment->install(array('upload_id' => $themeUpload['upload_id']));
+            $this->assertFalse($themeResult instanceof \WP_Error);
+            $this->assertTrue(!empty($themeResult['recovery_id']));
+            $this->assertSame('theme replacement', file_get_contents($themeRoot . '/assets/new.css'));
+            $this->assertFalse(file_exists($themeRoot . '/assets/old.css'));
+            $this->assertSame('unrelated edit after upload', file_get_contents($themeRoot . '/templates/index.html'));
+
+            $this->put($themeRoot . '/templates/index.html', 'unrelated edit after replacement');
+            $themeRestore = $themeDeployment->restore(array('recovery_id' => $themeResult['recovery_id']));
+            $this->assertFalse($themeRestore instanceof \WP_Error);
+            $this->assertSame('old', file_get_contents($themeRoot . '/assets/old.css'));
+            $this->assertFalse(file_exists($themeRoot . '/assets/new.css'));
+            $this->assertSame('unrelated edit after replacement', file_get_contents($themeRoot . '/templates/index.html'));
+        }
+
+        public function test_folder_addition_recovery_restores_original_absence(): void
+        {
+            [$deployment, $upload] = $this->uploaded(
+                'plugin',
+                $this->zip(array('example/src/NewModule/new.php' => 'new module')),
+                'src/NewModule'
+            );
+            $result = $deployment->install(array('upload_id' => $upload['upload_id']));
+            $this->assertFalse($result instanceof \WP_Error);
+            $this->assertTrue(!empty($result['recovery_id']));
+            $this->assertSame('new module', file_get_contents($this->plugin . '/src/NewModule/new.php'));
+
+            $this->put($this->plugin . '/src/Other/live.php', 'unrelated edit after addition');
+            $restored = $deployment->restore(array('recovery_id' => $result['recovery_id']));
+            $this->assertFalse($restored instanceof \WP_Error);
+            $this->assertFalse(is_dir($this->plugin . '/src/NewModule'));
+            $this->assertSame('unrelated edit after addition', file_get_contents($this->plugin . '/src/Other/live.php'));
+        }
+
+        public function test_folder_replacement_ignores_oversized_unrelated_package_content(): void
+        {
+            $large = $this->plugin . '/src/Other/runtime-generated.bin';
+            $handle = fopen($large, 'c+b');
+            $this->assertTrue(is_resource($handle));
+            try {
+                $this->assertTrue(ftruncate($handle, (101 * 1024 * 1024) + 1));
+            } finally {
+                fclose($handle);
+            }
+
+            [$deployment, $upload] = $this->uploaded(
+                'plugin',
+                $this->zip(array('example/src/Module/new.php' => 'replacement'))
+            );
+            $result = $deployment->install(array('upload_id' => $upload['upload_id']));
+            $this->assertFalse($result instanceof \WP_Error);
+            $this->assertSame('replacement', file_get_contents($this->plugin . '/src/Module/new.php'));
+            $this->assertTrue(filesize($large) > 100 * 1024 * 1024);
         }
 
         public function test_native_update_requires_wordpress_advertised_update_and_restore_refuses_diverged_source(): void

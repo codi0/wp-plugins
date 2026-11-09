@@ -3,7 +3,7 @@
 /*
 Plugin Name: Codi Mail
 Description: Send WordPress emails using an SMTP email provider.
-Version: 1.0.0
+Version: 1.0.2
 Author: codi0
 Author URI: https://codi.io
 */
@@ -65,8 +65,8 @@ function codi_mail_load_driver($driver=null) {
 	$opts = codi_mail_opts();
 	//set driver
 	$driver = $driver ?: $opts['type'];
-	//has driver?
-	if(empty($driver)) {
+	//has supported driver?
+	if(!in_array($driver, [ 'smtp', 'ses' ], true)) {
 		return;
 	}
 	//get file path
@@ -89,10 +89,10 @@ function codi_mail_init_phpmailer($phpMailer) {
 	if($opts['host']) {
 		//use SMTP
 		$phpMailer->isSMTP();
-		$phpMailer->SMTPAuth = true;
+		$phpMailer->SMTPAuth = ($opts['username'] !== '' || $opts['password'] !== '');
 		//set credentials
 		$phpMailer->Host = $opts['host'];
-		$phpMailer->Port = $opts['port'] ?: 587;
+		$phpMailer->Port = (int)($opts['port'] ?: 587);
 		$phpMailer->Username = $opts['username'];
 		$phpMailer->Password = $opts['password'];
 		//set protocol?
@@ -100,7 +100,7 @@ function codi_mail_init_phpmailer($phpMailer) {
 			$phpMailer->SMTPSecure = $opts['protocol'];
 		}
 		//set from?
-		if($opts['from']) {
+		if($opts['from'] && is_email($opts['from'])) {
 			$phpMailer->setFrom($opts['from']);
 		}
 	}
@@ -134,18 +134,21 @@ function codi_mail_admin_options() {
 	$types = [ 'smtp' => 'SMTP', 'ses' => 'Amazon SES API' ];
 	$test = [ 'to' => '', 'subject' => '', 'message' => '', 'result' => null ];
 	//force type?
-	if(isset($_GET['type']) && $_GET['type']) {
-		$opts['type'] = $_GET['type'];
+	if(isset($_GET['type'])) {
+		$type = sanitize_key(wp_unslash($_GET['type']));
+		if(in_array($type, [ 'smtp', 'ses' ], true)) {
+			$opts['type'] = $type;
+		}
 	}
 	//load driver
 	codi_mail_load_driver($opts['type']);
 	//save data?
 	if(isset($_POST['mail_opts']) && check_admin_referer($page)) {
-		$opts = codi_mail_opts($_POST['mail_opts']);
+		$opts = codi_mail_opts(wp_unslash($_POST['mail_opts']));
 	}
 	//send test?
 	if(isset($_POST['mail_test']) && check_admin_referer($page)) {
-		$test = $_POST['mail_test'];
+		$test = wp_unslash($_POST['mail_test']);
 		$attachments = [];
 		$attachment_files = [];
 		$attachment_dirs = [];

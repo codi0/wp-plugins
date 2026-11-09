@@ -10,6 +10,7 @@ final class FolderReplacement
     private string $workspace;
     private string $wordpressRoot;
     private \Closure $move;
+    private string $moveError = '';
     private \Closure $extract;
     private \Closure $extractFile;
     private bool $requiresZipArchive;
@@ -186,8 +187,8 @@ final class FolderReplacement
             if ($existed) {
                 // Invalidate original paths, including PHP files removed by replacement.
                 $this->invalidate($target);
-                if (!(($this->move)($target, $backup))) {
-                    throw new \RuntimeException('Could not move the original folder into recovery storage.');
+                if (!$this->movePath($target, $backup)) {
+                    throw $this->moveException('Could not move the original folder into recovery storage.');
                 }
                 $record['phase'] = 'backed_up';
                 $this->writeJournal($transaction, $record);
@@ -199,8 +200,8 @@ final class FolderReplacement
                 return $this->error('folder_conflict', 'The destination appeared after upload creation. It has not been changed.');
             }
             $promotionStarted = true;
-            if (!(($this->move)($staged, $target))) {
-                throw new \RuntimeException('Could not move the replacement folder into place.');
+            if (!$this->movePath($staged, $target)) {
+                throw $this->moveException('Could not move the replacement folder into place.');
             }
             $record['phase'] = 'installed';
             $this->writeJournal($transaction, $record);
@@ -227,12 +228,12 @@ final class FolderReplacement
                     if (is_dir($target)) {
                         $this->invalidate($target);
                     }
-                    if (file_exists($target) && !(($this->move)($target, $transaction . '/failed-replacement'))) {
-                        throw new \RuntimeException('Could not move the failed replacement aside.');
+                    if (file_exists($target) && !$this->movePath($target, $transaction . '/failed-replacement')) {
+                        throw $this->moveException('Could not move the failed replacement aside.');
                     }
                     if ($existed) {
-                        if (!(($this->move)($backup, $target))) {
-                            throw new \RuntimeException('Could not restore the original folder.');
+                        if (!$this->movePath($backup, $target)) {
+                            throw $this->moveException('Could not restore the original folder.');
                         }
                         clearstatcache(true);
                         // Preserve any external edit detected after the original rename.
@@ -255,6 +256,131 @@ final class FolderReplacement
                 }
             }
             return $this->error('folder_replace_failed', $error->getMessage() . ($existed ? ' The original folder has been preserved.' : ' Folder addition was not completed.'));
+        } finally {
+            if (!$retain) {
+                $this->endMaintenance($maintenance);
+                $this->removeTree($transaction);
+                if (is_dir($transaction)) {
+                    error_log('Codi MCP deployment cleanup is pending: ' . $transaction);
+                }
+            }
+        }
+    }
+
+    /** Called under locked() when durable recovery must restore an originally absent folder. */
+    public function removeFolder(string $root, array $selection, string $transactionId, ?callable $verify = null): true|\WP_Error
+    {
+        $direct = $this->directFilesystem();
+        if ($direct instanceof \WP_Error) {
+            return $direct;
+        }
+        $folder = $selection['folder'] ?? null;
+        if (!ReplacementSelection::validFolder($folder)
+            || ($selection['exists'] ?? null) !== true
+            || !is_string($selection['root'] ?? null) || realpath($root) !== $selection['root']
+            || !is_string($selection['fingerprint'] ?? null)
+            || !preg_match('/^[a-f0-9]{64}$/D', $selection['fingerprint'])
+            || !preg_match('/^[a-f0-9]{32}$/D', $transactionId)) {
+            return $this->error('bad_replacement', 'Stored folder recovery metadata does not match the installed target.');
+        }
+
+        $target = $this->target($root, $folder);
+        if ($target instanceof \WP_Error) {
+            return $target;
+        }
+        if (!$this->privateWorkspace()) {
+            return $this->error('private_staging_required', 'Folder recovery requires a private temporary directory outside the WordPress and document roots.');
+        }
+
+        $transaction = $this->workspace . '/transactions/' . $this->key($root) . '/' . $transactionId;
+        if (file_exists($transaction) || !$this->directory($transaction, 0700)) {
+            return $this->error('deployment_busy', 'This recovery already has deployment state; create a fresh recovery attempt after checking its result.');
+        }
+
+        $backup = $transaction . '/original';
+        $retain = false;
+        $maintenance = null;
+        $restoreFingerprint = (string) $selection['fingerprint'];
+        $record = array(
+            'root' => $selection['root'],
+            'folder' => $folder,
+            'exists' => true,
+            'fingerprint' => $selection['fingerprint'],
+            'restore_absence' => true,
+            'phase' => 'staging',
+        );
+
+        try {
+            $this->writeJournal($transaction, $record);
+            $transactionStat = stat($transaction);
+            $targetStat = stat(dirname($target));
+            if (!is_array($transactionStat) || !is_array($targetStat) || $transactionStat['dev'] !== $targetStat['dev']) {
+                return $this->error('same_filesystem_required', 'Folder recovery staging and the installed target must be on the same filesystem.');
+            }
+
+            $currentTarget = $this->target($root, $folder);
+            if ($currentTarget instanceof \WP_Error || $currentTarget !== $target
+                || !is_dir($target)
+                || !hash_equals((string) $selection['fingerprint'], $this->fingerprint($target))) {
+                return $this->error('folder_conflict', 'The selected folder changed after its recovery point was created; restore was refused.');
+            }
+
+            $maintenance = $this->beginMaintenance();
+            $this->invalidate($target);
+            if (!$this->movePath($target, $backup)) {
+                throw $this->moveException('Could not move the selected folder into recovery storage.');
+            }
+            $record['phase'] = 'backed_up';
+            $this->writeJournal($transaction, $record);
+            $restoreFingerprint = $this->fingerprint($backup);
+            if (!hash_equals((string) $selection['fingerprint'], $restoreFingerprint)) {
+                throw new \RuntimeException('The selected folder changed while recovery began.');
+            }
+
+            clearstatcache(true);
+            if (file_exists($target) || is_link($target)) {
+                throw new \RuntimeException('Could not restore the original absence of the selected folder.');
+            }
+            if ($verify !== null) {
+                $health = $verify();
+                if ($health !== true) {
+                    $message = $health instanceof \WP_Error ? $health->get_error_message() : 'WordPress runtime verification did not succeed.';
+                    throw new \RuntimeException($message);
+                }
+            }
+
+            $record['phase'] = 'committed';
+            $this->writeJournal($transaction, $record);
+            return true;
+        } catch (\Throwable $error) {
+            clearstatcache(true);
+            if (is_dir($backup)) {
+                try {
+                    if (file_exists($target) || is_link($target)) {
+                        if (is_dir($target)) {
+                            $this->invalidate($target);
+                        }
+                        if (!$this->movePath($target, $transaction . '/failed-removal')) {
+                            throw $this->moveException('Could not move the failed recovery result aside.');
+                        }
+                    }
+                    if (!$this->movePath($backup, $target)) {
+                        throw $this->moveException('Could not restore the selected folder after failed recovery.');
+                    }
+                    clearstatcache(true);
+                    if (!hash_equals($restoreFingerprint, $this->fingerprint($target))) {
+                        throw new \RuntimeException('Restored folder verification failed.');
+                    }
+                    $this->invalidate($target);
+                    $record['phase'] = 'rolled_back';
+                    $this->writeJournal($transaction, $record);
+                } catch (\Throwable $rollbackError) {
+                    $retain = true;
+                    error_log('Codi MCP folder recovery required: ' . $transaction . ' - ' . $rollbackError->getMessage());
+                    return $this->recovery($transaction);
+                }
+            }
+            return $this->error('folder_remove_failed', $error->getMessage() . ' The selected folder has been preserved.');
         } finally {
             if (!$retain) {
                 $this->endMaintenance($maintenance);
@@ -325,8 +451,8 @@ final class FolderReplacement
 
             $maintenance = $this->beginMaintenance();
             $this->invalidate($target);
-            if (!(($this->move)($target, $backup))) {
-                throw new \RuntimeException('Could not move the original file into recovery storage.');
+            if (!$this->movePath($target, $backup)) {
+                throw $this->moveException('Could not move the original file into recovery storage.');
             }
             $record['phase'] = 'backed_up';
             $this->writeJournal($transaction, $record);
@@ -336,8 +462,8 @@ final class FolderReplacement
             }
 
             $promotionStarted = true;
-            if (!(($this->move)($staged, $target))) {
-                throw new \RuntimeException('Could not move the replacement file into place.');
+            if (!$this->movePath($staged, $target)) {
+                throw $this->moveException('Could not move the replacement file into place.');
             }
             $record['phase'] = 'installed';
             $this->writeJournal($transaction, $record);
@@ -362,12 +488,12 @@ final class FolderReplacement
                 try {
                     if (is_file($target)) {
                         $this->invalidate($target);
-                        if (!(($this->move)($target, $transaction . '/failed-replacement'))) {
-                            throw new \RuntimeException('Could not move the failed replacement aside.');
+                        if (!$this->movePath($target, $transaction . '/failed-replacement')) {
+                            throw $this->moveException('Could not move the failed replacement aside.');
                         }
                     }
-                    if (!is_file($backup) || !(($this->move)($backup, $target))) {
-                        throw new \RuntimeException('Could not restore the original file.');
+                    if (!is_file($backup) || !$this->movePath($backup, $target)) {
+                        throw $this->moveException('Could not restore the original file.');
                     }
                     clearstatcache(true, $target);
                     if (!hash_equals($restoreFingerprint, $this->fileFingerprint($target))) {
@@ -505,6 +631,35 @@ final class FolderReplacement
             }
         }
         return true;
+    }
+
+    private function movePath(string $from, string $to): bool
+    {
+        $this->moveError = '';
+        error_clear_last();
+        $moved = ($this->move)($from, $to);
+        if ($moved) {
+            return true;
+        }
+
+        $last = error_get_last();
+        if (is_array($last) && is_string($last['message'] ?? null)) {
+            $message = trim($last['message']);
+            if (preg_match('/:\\s*([^:\\r\\n]+)$/', $message, $matches)) {
+                $message = trim($matches[1]);
+            }
+            $this->moveError = substr($message, 0, 200);
+        }
+
+        return false;
+    }
+
+    private function moveException(string $message): \RuntimeException
+    {
+        if ($this->moveError !== '') {
+            $message .= ' Filesystem error: ' . $this->moveError;
+        }
+        return new \RuntimeException($message);
     }
 
     private function key(string $root): string

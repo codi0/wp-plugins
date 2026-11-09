@@ -111,6 +111,107 @@ final class CodeRecoveryStore
         return $this->persistStaged($kind, $identity, $beforeFingerprint, $metadata, $staged);
     }
 
+    /** @param array<string,mixed> $metadata @return array<string,mixed>|\WP_Error */
+    public function createFolder(
+        string $kind,
+        string $identity,
+        string $sourceDirectory,
+        string $relativeFolder,
+        string $beforeFingerprint,
+        bool $existed,
+        array $metadata = array()
+    ): array|\WP_Error {
+        $purpose = $this->purpose($kind);
+        if ($purpose === '' || !ReplacementSelection::validFolder($relativeFolder)) {
+            return new \WP_Error('codi_mcp_recovery_kind', 'Folder recovery target is invalid.');
+        }
+        if (!preg_match('/^[a-f0-9]{64}$/D', $beforeFingerprint)) {
+            return new \WP_Error('codi_mcp_recovery_fingerprint', 'Folder recovery fingerprint is invalid.');
+        }
+
+        $root = realpath($sourceDirectory);
+        if (!is_string($root) || !is_dir($root) || is_link($root)) {
+            return new \WP_Error('codi_mcp_recovery_source', 'Folder recovery source package is unavailable.');
+        }
+
+        $target = $root;
+        foreach (explode('/', $relativeFolder) as $part) {
+            $target .= DIRECTORY_SEPARATOR . $part;
+            if (is_link($target)) {
+                return new \WP_Error('codi_mcp_recovery_source', 'Folder recovery source contains a symbolic link.');
+            }
+        }
+
+        $snapshotPath = '';
+        if ($existed) {
+            if (!is_dir($target)) {
+                return new \WP_Error('codi_mcp_recovery_source_changed', 'Selected folder changed before its recovery point could be created.');
+            }
+            $snapshot = $this->snapshots->create($target, $beforeFingerprint);
+            if ($snapshot instanceof \WP_Error) {
+                return $snapshot;
+            }
+            $snapshotPath = (string) ($snapshot['path'] ?? '');
+        } else {
+            if (!hash_equals(PackageFingerprint::absent(), $beforeFingerprint)) {
+                return new \WP_Error('codi_mcp_recovery_fingerprint', 'Absent folder recovery fingerprint is invalid.');
+            }
+            if (file_exists($target) || is_link($target)) {
+                return new \WP_Error('codi_mcp_recovery_source_changed', 'Selected folder appeared before its recovery point could be created.');
+            }
+        }
+
+        $temporary = function_exists('get_temp_dir') ? (string) get_temp_dir() : sys_get_temp_dir();
+        $wrapper = rtrim($temporary, "\\/") . DIRECTORY_SEPARATOR . 'codi-mcp' . DIRECTORY_SEPARATOR . 'folder-recovery-' . bin2hex(random_bytes(16));
+        $snapshotTarget = $wrapper . DIRECTORY_SEPARATOR . str_replace('/', DIRECTORY_SEPARATOR, $relativeFolder);
+        if (!@mkdir(dirname($snapshotTarget), 0700, true)) {
+            if ($snapshotPath !== '') {
+                $this->snapshots->remove($snapshotPath);
+            }
+            return new \WP_Error('codi_mcp_recovery_storage', 'Could not create folder recovery staging.');
+        }
+
+        try {
+            if ($existed) {
+                if ($snapshotPath === '' || !@rename($snapshotPath, $snapshotTarget)) {
+                    return new \WP_Error('codi_mcp_recovery_storage', 'Could not prepare the selected folder recovery snapshot.');
+                }
+                $snapshotPath = '';
+            } elseif (!@mkdir($snapshotTarget, 0700, true) && !is_dir($snapshotTarget)) {
+                return new \WP_Error('codi_mcp_recovery_storage', 'Could not prepare absent-folder recovery metadata.');
+            }
+
+            // ArtifactDownloadStore intentionally refuses a directory tree
+            // containing no files. Keep one internal marker outside the
+            // selected subtree so empty/absent folders still have a durable
+            // recovery artifact; FolderArchive ignores it during restoration.
+            if (@file_put_contents($wrapper . DIRECTORY_SEPARATOR . '.codi-folder-recovery', "folder\n") === false) {
+                return new \WP_Error('codi_mcp_recovery_storage', 'Could not finalize folder recovery staging.');
+            }
+
+            $staged = $this->artifacts->stageDirectory(
+                $purpose,
+                $wrapper,
+                $identity,
+                'recovery-' . $identity . '.zip',
+                array('kind' => $kind, 'identity' => $identity, 'scope' => 'folder', 'folder' => $relativeFolder, 'folder_existed' => $existed)
+            );
+            if ($staged instanceof \WP_Error) {
+                return $staged;
+            }
+        } finally {
+            if ($snapshotPath !== '') {
+                $this->snapshots->remove($snapshotPath);
+            }
+            $this->removeTree($wrapper);
+        }
+
+        $metadata['scope'] = 'folder';
+        $metadata['folder'] = $relativeFolder;
+        $metadata['folder_existed'] = $existed;
+        return $this->persistStaged($kind, $identity, $beforeFingerprint, $metadata, $staged);
+    }
+
     /** @param array<string,mixed> $metadata @param array<string,mixed> $staged @return array<string,mixed>|\WP_Error */
     private function persistStaged(string $kind, string $identity, string $beforeFingerprint, array $metadata, array $staged): array|\WP_Error
     {
