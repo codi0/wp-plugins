@@ -99,7 +99,7 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
         wp_register_ability($this->abilityName('site-call'), array(
             'label' => 'Call target-site ability',
-            'description' => 'Run a known ability on an explicit site with arguments matching its input schema.',
+            'description' => 'Run a known ability on an explicit site. Target failures are returned in the structured error field.',
             'category' => $this->category(),
             'input_schema' => $this->callInputSchema(),
             'output_schema' => $this->callOutputSchema(),
@@ -225,9 +225,22 @@ final class Package implements AbilityPackage, RuntimePackage, ManagedExposurePa
 
     private function callOutputSchema(): array
     {
-        return $this->strictObject(array(
-            'result' => $this->jsonValueSchema(),
+        $error = $this->strictObject(array(
+            'code' => array('type' => 'string'),
+            'message' => array('type' => 'string'),
+            'status' => array('type' => array('integer', 'null'), 'minimum' => 400, 'maximum' => 599),
+            'details' => array('type' => 'object', 'additionalProperties' => true),
         ));
+        $error['required'] = array('code', 'message', 'status', 'details');
+        return array(
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => array(
+                'result' => $this->jsonValueSchema(),
+                'error' => $error,
+            ),
+            'required' => array('result'),
+        );
     }
 
     private function jsonValueSchema(): array

@@ -27,8 +27,7 @@ final class ActionSchedulerBackend
         return class_exists('ActionScheduler')
             && class_exists('ActionScheduler_Store')
             && method_exists('ActionScheduler', 'store')
-            && method_exists('ActionScheduler', 'logger')
-            && method_exists('ActionScheduler', 'runner');
+            && method_exists('ActionScheduler', 'logger');
     }
 
     public function canManage(): bool
@@ -48,7 +47,7 @@ final class ActionSchedulerBackend
         }
 
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $status = strtolower(trim((string) ($input['status'] ?? 'all')));
         $query = array(
             'per_page' => $perPage,
@@ -113,65 +112,6 @@ final class ActionSchedulerBackend
             return $ready;
         }
         return $this->detail(max(1, (int) ($input['id'] ?? 0)));
-    }
-
-    public function run(array $input = array())
-    {
-        $ready = $this->ready();
-        if ($ready instanceof \WP_Error) {
-            return $ready;
-        }
-
-        $id = max(1, (int) ($input['id'] ?? 0));
-        $state = $this->state($id);
-        if ($state instanceof \WP_Error) {
-            return $state;
-        }
-        if ($state['status'] !== \ActionScheduler_Store::STATUS_PENDING) {
-            return new \WP_Error('codi_mcp_job_not_pending', 'Only a pending Action Scheduler job can be run manually.');
-        }
-        if ($state['claim_id'] > 0) {
-            return new \WP_Error('codi_mcp_job_claimed', 'The job is currently claimed by another Action Scheduler runner.');
-        }
-
-        try {
-            \ActionScheduler::runner()->process_action($id, 'Codi MCP');
-        } catch (\Throwable $throwable) {
-            return new \WP_Error('codi_mcp_job_run_failed', $this->safeMessage($throwable->getMessage()));
-        }
-
-        return $this->detail($id);
-    }
-
-    public function cancel(array $input = array())
-    {
-        $ready = $this->ready();
-        if ($ready instanceof \WP_Error) {
-            return $ready;
-        }
-
-        $id = max(1, (int) ($input['id'] ?? 0));
-        $state = $this->state($id);
-        if ($state instanceof \WP_Error) {
-            return $state;
-        }
-        if ($state['status'] === \ActionScheduler_Store::STATUS_CANCELED) {
-            return $this->detail($id);
-        }
-        if ($state['status'] !== \ActionScheduler_Store::STATUS_PENDING) {
-            return new \WP_Error('codi_mcp_job_not_pending', 'Only a pending Action Scheduler job can be canceled.');
-        }
-        if ($state['claim_id'] > 0) {
-            return new \WP_Error('codi_mcp_job_claimed', 'The job is currently claimed by another Action Scheduler runner.');
-        }
-
-        try {
-            \ActionScheduler::store()->cancel_action($id);
-        } catch (\Throwable $throwable) {
-            return new \WP_Error('codi_mcp_job_cancel_failed', $this->safeMessage($throwable->getMessage()));
-        }
-
-        return $this->detail($id);
     }
 
     private function ready(): bool|\WP_Error

@@ -31,7 +31,7 @@ final class DatabaseInspector
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $relationship = (string) ($input['relationship'] ?? 'all');
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $shared = $this->sharedTables();
 
         $rows = array();
@@ -165,7 +165,7 @@ final class DatabaseInspector
 
         $sql = trim((string) ($input['sql'] ?? ''));
         $params = is_array($input['params'] ?? null) ? array_values($input['params']) : array();
-        $maxRows = min(QueryPolicy::MAX_ROWS, max(1, (int) ($input['max_rows'] ?? 100)));
+        $maxRows = min(QueryPolicy::MAX_ROWS, max(1, (int) ($input['max_rows'] ?? 50)));
 
         $validation = $this->queryPolicy()->validate($sql, $params);
         if (is_wp_error($validation)) {
@@ -186,10 +186,7 @@ final class DatabaseInspector
             $validation['sql'],
             $params,
             $validation['placeholder_types'],
-            $tableNames,
-            $this->sharedTables(),
-            (string) $wpdb->prefix,
-            (string) $wpdb->base_prefix
+            $tableNames
         );
         if (is_wp_error($scope)) {
             return $scope;

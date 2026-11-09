@@ -68,7 +68,7 @@ final class ArtifactDownloadStore
         }
         @chmod($paths['directory'], 0700);
 
-        $written = $this->writeArchive($scan['files'], $sourceRoot, $archiveRoot, $paths['archive']);
+        $written = $this->writeArchive($scan['files'], $scan['empty_directories'], $sourceRoot, $archiveRoot, $paths['archive']);
         if ($written instanceof \WP_Error) {
             $this->removeDownloadFiles($paths);
             return $written;
@@ -106,7 +106,7 @@ final class ArtifactDownloadStore
         return array('download_id' => $downloadId, 'meta' => $record);
     }
 
-    /** @return array{source_root:string,files:array<int,string>,file_count:int,source_bytes:int}|\WP_Error */
+    /** @return array{source_root:string,files:array<int,string>,empty_directories:array<int,string>,file_count:int,source_bytes:int}|\WP_Error */
     private function validateDirectory(string $sourceDirectory): array|\WP_Error
     {
         $sourceRoot = realpath($sourceDirectory);
@@ -264,19 +264,34 @@ final class ArtifactDownloadStore
         return array('download_id' => $downloadId, 'path' => $paths['archive'], 'meta' => $decoded, 'expires_at' => $decoded['created'] + $this->ttlSeconds);
     }
 
+    public function delete(string $downloadId, string $purpose): bool
+    {
+        $download = $this->get($downloadId, $purpose);
+        if ($download instanceof \WP_Error) {
+            return false;
+        }
+        $this->removeDownloadFiles($this->paths($downloadId));
+        return true;
+    }
+
     public static function defaultRootDirectory(): string
     {
         $temporary = function_exists('get_temp_dir') ? (string) get_temp_dir() : sys_get_temp_dir();
         return rtrim($temporary, "\\/") . DIRECTORY_SEPARATOR . 'codi-mcp' . DIRECTORY_SEPARATOR . 'downloads';
     }
 
-    /** @return array{files:array<int,string>,file_count:int,source_bytes:int}|\WP_Error */
+    /** @return array{files:array<int,string>,empty_directories:array<int,string>,file_count:int,source_bytes:int}|\WP_Error */
     private function scanSource(string $sourceRoot): array|\WP_Error
     {
         $files = array();
+        $emptyDirectories = array();
         $bytes = 0;
+        $entries = 0;
         try {
-            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($sourceRoot, \FilesystemIterator::SKIP_DOTS));
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($sourceRoot, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::SELF_FIRST
+            );
             foreach ($iterator as $info) {
                 if (!$info instanceof \SplFileInfo) {
                     continue;
@@ -284,17 +299,27 @@ final class ArtifactDownloadStore
                 if ($info->isLink()) {
                     return new \WP_Error('codi_mcp_export_symlink', 'Artifact export refuses symbolic links.');
                 }
-                if (!$info->isFile()) {
-                    continue;
+                if (++$entries > $this->maxFiles) {
+                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the entry-count or uncompressed-size limit.');
                 }
                 $resolved = $info->getRealPath();
                 if (!is_string($resolved) || !$this->withinRoot($resolved, $sourceRoot)) {
                     return new \WP_Error('codi_mcp_export_scope', 'Artifact source resolves outside the selected package directory.');
                 }
+                if ($info->isDir()) {
+                    $children = @scandir($resolved);
+                    if (is_array($children) && count($children) === 2) {
+                        $emptyDirectories[] = $resolved;
+                    }
+                    continue;
+                }
+                if (!$info->isFile()) {
+                    continue;
+                }
                 $files[] = $resolved;
                 $bytes += max(0, (int) $info->getSize());
-                if (count($files) > $this->maxFiles || $bytes > $this->maxSourceBytes) {
-                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the file-count or uncompressed-size limit.');
+                if ($bytes > $this->maxSourceBytes) {
+                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the entry-count or uncompressed-size limit.');
                 }
             }
         } catch (\Throwable) {
@@ -304,15 +329,16 @@ final class ArtifactDownloadStore
             return new \WP_Error('codi_mcp_export_empty', 'Artifact source directory contains no files.');
         }
         sort($files, SORT_STRING);
-        return array('files' => $files, 'file_count' => count($files), 'source_bytes' => $bytes);
+        sort($emptyDirectories, SORT_STRING);
+        return array('files' => $files, 'empty_directories' => $emptyDirectories, 'file_count' => count($files), 'source_bytes' => $bytes);
     }
 
-    /** @param array<int,string> $files */
-    private function writeArchive(array $files, string $sourceRoot, string $archiveRoot, string $archivePath): bool|\WP_Error
+    /** @param array<int,string> $files @param array<int,string> $emptyDirectories */
+    private function writeArchive(array $files, array $emptyDirectories, string $sourceRoot, string $archiveRoot, string $archivePath): bool|\WP_Error
     {
         if (is_callable($this->archiveWriter)) {
             try {
-                $result = ($this->archiveWriter)($files, $sourceRoot, $archiveRoot, $archivePath);
+                $result = ($this->archiveWriter)($files, $sourceRoot, $archiveRoot, $archivePath, $emptyDirectories);
                 return true === $result ? true : new \WP_Error('codi_mcp_export_zip_failed', 'Configured artifact writer could not create the ZIP.');
             } catch (\Throwable) {
                 return new \WP_Error('codi_mcp_export_zip_failed', 'Configured artifact writer could not create the ZIP.');
@@ -323,6 +349,14 @@ final class ArtifactDownloadStore
             $opened = $zip->open($archivePath, \ZipArchive::CREATE | \ZipArchive::OVERWRITE);
             if (true !== $opened) {
                 return new \WP_Error('codi_mcp_export_zip_failed', 'Could not create the artifact ZIP.');
+            }
+            foreach ($emptyDirectories as $directory) {
+                $relative = ltrim(str_replace('\\', '/', substr($directory, strlen($sourceRoot))), '/');
+                if ($relative !== '' && !$zip->addEmptyDir($archiveRoot . '/' . $relative)) {
+                    $zip->close();
+                    @unlink($archivePath);
+                    return new \WP_Error('codi_mcp_export_zip_failed', 'Could not preserve an empty source directory in the artifact ZIP.');
+                }
             }
             foreach ($files as $file) {
                 $relative = ltrim(str_replace('\\', '/', substr($file, strlen($sourceRoot))), '/');
@@ -343,7 +377,7 @@ final class ArtifactDownloadStore
             return new \WP_Error('codi_mcp_export_zip_unavailable', 'WordPress ZIP support is unavailable.');
         }
         $archive = new \PclZip($archivePath);
-        $result = $archive->create($files, PCLZIP_OPT_REMOVE_PATH, $sourceRoot, PCLZIP_OPT_ADD_PATH, $archiveRoot);
+        $result = $archive->create(array_merge($files, $emptyDirectories), PCLZIP_OPT_REMOVE_PATH, $sourceRoot, PCLZIP_OPT_ADD_PATH, $archiveRoot);
         return 0 === $result ? new \WP_Error('codi_mcp_export_zip_failed', 'WordPress could not create the artifact ZIP.') : true;
     }
 

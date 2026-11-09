@@ -47,6 +47,7 @@ final class Plugin
     private ?AdminPage $adminPage = null;
     private ?NetworkAdminPage $networkAdminPage = null;
     private ?PackageAvailabilityPolicy $availability = null;
+    private ?PackageSourcePolicy $sourcePolicy = null;
     private ?AuditLog $auditLog = null;
 
     /** @param callable[] $packageFactories */
@@ -89,6 +90,9 @@ final class Plugin
                 add_action('network_admin_menu', [$this, 'registerNetworkAdminMenu']);
                 add_action('network_admin_edit_codi_mcp_save_network_packages', [$this, 'saveNetworkPackages']);
                 add_action('network_admin_edit_codi_mcp_revoke_network_oauth_client', [$this, 'revokeNetworkOAuthClient']);
+                add_action('network_admin_edit_codi_mcp_save_network_source_policy', [$this, 'saveNetworkSourcePolicy']);
+            } else {
+                add_action('admin_post_codi_mcp_save_source_policy', [$this, 'saveSiteSourcePolicy']);
             }
         }
     }
@@ -365,6 +369,11 @@ final class Plugin
         $this->adminPage()->revokeOAuthClient();
     }
 
+    public function saveSiteSourcePolicy(): void
+    {
+        $this->adminPage()->saveSourcePolicy();
+    }
+
     public function registerNetworkAdminMenu(): void
     {
         $this->networkAdminPage()->registerMenu();
@@ -378,6 +387,11 @@ final class Plugin
     public function revokeNetworkOAuthClient(): void
     {
         $this->networkAdminPage()->revokeOAuthClient();
+    }
+
+    public function saveNetworkSourcePolicy(): void
+    {
+        $this->networkAdminPage()->saveSourcePolicy();
     }
 
     /** @return AbilityPackage[] */
@@ -434,7 +448,7 @@ final class Plugin
                 CODI_MCP_SERVER_ID,
                 CODI_MCP_SERVER_REST_ROUTE,
                 'Codi MCP',
-                'WordPress site administration and content editing. Reuse returned IDs. Use Content for post/page lifecycle, Presentation for blocks and design, and Plugins/Themes for source packages.',
+                'WordPress site administration and content editing. Reuse returned IDs. Treat source policy as mutation authority, not ownership. For diagnostics, use diagnostic-compare on repeated comparable captures and attribute component/caller before remediation; diagnostic opportunities are evidence, not instructions to mutate. Change source only when policy permits. Do not patch source, alter external/core component schema, update, or deactivate external/core components solely because diagnostics implicate them; prefer supported configuration or public hooks/APIs. For small installation-specific adaptations to core/plugins/themes, prefer the intrinsically managed codi-mcp-custom companion when present; on multisite it is network-only, modules scope explicitly by current site ID, and must fail inertly when targets are absent/inactive/incompatible. Use native updates only when independently justified. Use Content for post/page lifecycle, Presentation for blocks and design, and Plugins/Themes for source packages.',
                 $this->multisiteAbilityNames(),
                 null,
                 fn ($request): bool => $this->authenticator()->hasValidBearer($request)
@@ -451,7 +465,7 @@ final class Plugin
                 CODI_MCP_NETWORK_SERVER_ID,
                 CODI_MCP_NETWORK_SERVER_REST_ROUTE,
                 'Codi MCP — Network',
-                'WordPress multisite. Reuse known site IDs and discovery results. Search for unknown abilities; call known abilities directly with their input schema. Never guess a site ID.',
+                'WordPress multisite. Reuse known site IDs and discovery results; never guess a site ID. Treat target source policy as mutation authority, not ownership. For diagnostics, use diagnostic-compare on repeated comparable captures and attribute component/caller before remediation; diagnostic opportunities are evidence, not instructions to mutate. Change source only when policy permits. Do not patch source, alter external/core component schema, update, or deactivate external/core components solely because diagnostics implicate them; prefer supported configuration or public hooks/APIs. For small installation-specific adaptations to core/plugins/themes, prefer the intrinsically managed codi-mcp-custom companion when present; it is network-only on multisite, modules scope explicitly by current site ID, and must fail inertly when targets are absent/inactive/incompatible. Use native updates only when independently justified. Search for unknown abilities; call known abilities directly with their input schema.',
                 array(),
                 $this->networkServerAbilityNames(),
                 fn ($request): bool => $this->networkAuthenticator()->hasValidBearer($request)
@@ -640,7 +654,7 @@ final class Plugin
     private function adminPage(): AdminPage
     {
         if ($this->adminPage === null) {
-            $this->adminPage = new AdminPage($this->exposure(), $this->oauthProfile(), $this->oauthServer(), $this->availability(), $this->packages());
+            $this->adminPage = new AdminPage($this->exposure(), $this->oauthProfile(), $this->oauthServer(), $this->availability(), $this->packages(), $this->sourcePolicy());
         }
         return $this->adminPage;
     }
@@ -652,7 +666,8 @@ final class Plugin
                 $this->availability(),
                 $this->packages(),
                 $this->networkOAuthProfile(),
-                $this->networkOAuthServer()
+                $this->networkOAuthServer(),
+                $this->sourcePolicy()
             );
         }
         return $this->networkAdminPage;
@@ -687,6 +702,14 @@ final class Plugin
             $this->availability = new PackageAvailabilityPolicy();
         }
         return $this->availability;
+    }
+
+    private function sourcePolicy(): PackageSourcePolicy
+    {
+        if ($this->sourcePolicy === null) {
+            $this->sourcePolicy = new PackageSourcePolicy();
+        }
+        return $this->sourcePolicy;
     }
 
     private function requestHasBearer(): bool

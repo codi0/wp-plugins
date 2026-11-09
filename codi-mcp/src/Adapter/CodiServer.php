@@ -94,10 +94,22 @@ final class CodiServer
         if (!is_object($server) || !method_exists($server, 'get_server_id') || $server->get_server_id() !== $this->serverId) {
             return $tools;
         }
-        return array_map(static function ($tool) use ($schema) {
+        $abilities = function_exists('wp_get_abilities') ? (array) wp_get_abilities() : array();
+        return array_map(static function ($tool) use ($schema, $abilities) {
             $data = (array) $tool->jsonSerialize();
             unset($data['outputSchema']);
-            if (isset($data['inputSchema'])) {
+
+            $toolName = trim((string) ($data['name'] ?? ''));
+            $ability = $toolName !== '' ? ($abilities[$toolName] ?? null) : null;
+            $meta = is_object($ability) && method_exists($ability, 'get_meta') ? (array) $ability->get_meta() : array();
+            $codi = is_array($meta['codi_mcp'] ?? null) ? $meta['codi_mcp'] : array();
+            $modelInput = !empty($codi['owned']) && is_array($codi['model_input_schema'] ?? null)
+                ? $codi['model_input_schema']
+                : null;
+
+            if ($modelInput !== null) {
+                $data['inputSchema'] = SchemaPresentation::normalize($modelInput);
+            } elseif (isset($data['inputSchema'])) {
                 $data['inputSchema'] = SchemaPresentation::normalize($data['inputSchema']);
             }
             return $schema->fromArray(\WP\McpSchema\Record\Tool::class, $data);

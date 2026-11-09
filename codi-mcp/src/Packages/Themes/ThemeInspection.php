@@ -4,9 +4,20 @@ declare(strict_types=1);
 
 namespace CodiMcp\Packages\Themes;
 
+use CodiMcp\Core\PackageSourcePolicy;
+use CodiMcp\Core\Deployment\CodeRecoveryStore;
+
 final class ThemeInspection
 {
     private const MAX_PER_PAGE = 100;
+
+    public function __construct(
+        private ?PackageSourcePolicy $sourcePolicy = null,
+        private ?CodeRecoveryStore $recoveries = null
+    ) {
+        $this->sourcePolicy ??= new PackageSourcePolicy();
+        $this->recoveries ??= new CodeRecoveryStore();
+    }
 
     public function canInspect(): bool
     {
@@ -19,7 +30,8 @@ final class ThemeInspection
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $status = (string) ($input['status'] ?? 'all');
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
+        $detail = strtolower(trim((string) ($input['detail'] ?? 'summary')));
 
         $rows = array_values(array_filter($rows, static function (array $theme) use ($search, $status): bool {
             if ($search !== '') {
@@ -43,6 +55,9 @@ final class ThemeInspection
 
         $total = count($rows);
         $items = array_slice($rows, ($page - 1) * $perPage, $perPage);
+        if ($detail !== 'full') {
+            $items = array_map([self::class, 'summary'], $items);
+        }
         return array('items' => $items, 'total' => $total, 'page' => $page, 'per_page' => $perPage, 'returned' => count($items));
     }
 
@@ -83,6 +98,8 @@ final class ThemeInspection
             $parent = method_exists($theme, 'parent') ? $theme->parent() : null;
             $errors = method_exists($theme, 'errors') ? $theme->errors() : false;
             $update = $updateResponses[$stylesheet] ?? null;
+            $policy = $this->sourcePolicy->state('theme', $stylesheet);
+            $latestRecovery = $this->recoveries->latest('theme', $stylesheet);
             $rows[] = array(
                 'stylesheet' => $stylesheet,
                 'template' => method_exists($theme, 'get_template') ? (string) $theme->get_template() : '',
@@ -100,6 +117,13 @@ final class ThemeInspection
                 'has_errors' => is_wp_error($errors),
                 'update_available' => is_array($update) || is_object($update),
                 'update_version' => is_array($update) ? (string) ($update['new_version'] ?? '') : (is_object($update) ? (string) ($update->new_version ?? '') : ''),
+                'source_policy' => $policy,
+                'custom_replace_allowed' => $this->sourcePolicy->canCustomReplace('theme', $stylesheet, 'entire'),
+                'delete_allowed' => $this->sourcePolicy->canDelete('theme', $stylesheet),
+                'native_update_allowed' => is_array($update) || is_object($update),
+                'recovery_scope' => 'code',
+                'latest_recovery_id' => is_array($latestRecovery) ? (string) ($latestRecovery['recovery_id'] ?? '') : '',
+                'latest_recovery_expires_at' => is_array($latestRecovery) ? (string) ($latestRecovery['expires_at'] ?? '') : '',
             );
         }
         return $rows;
@@ -115,6 +139,7 @@ final class ThemeInspection
                 'status' => array('type' => 'string', 'enum' => array('all', 'active', 'inactive', 'allowed', 'blocked', 'update-available', 'block-theme', 'classic-theme')),
                 'page' => array('type' => 'integer', 'minimum' => 1),
                 'per_page' => array('type' => 'integer', 'minimum' => 1, 'maximum' => self::MAX_PER_PAGE),
+                'detail' => array('type' => 'string', 'enum' => array('summary', 'full'), 'default' => 'summary'),
             ),
         );
     }
@@ -135,7 +160,7 @@ final class ThemeInspection
             'type' => 'object',
             'additionalProperties' => false,
             'properties' => array(
-                'items' => array('type' => 'array', 'items' => self::themeSchema()),
+                'items' => array('type' => 'array', 'items' => self::themeListSchema()),
                 'total' => array('type' => 'integer'),
                 'page' => array('type' => 'integer'),
                 'per_page' => array('type' => 'integer'),
@@ -155,13 +180,34 @@ final class ThemeInspection
         return array('type' => 'string', 'minLength' => 1, 'maxLength' => 100, 'pattern' => '^[A-Za-z0-9][A-Za-z0-9._-]*$');
     }
 
+    private static function summary(array $theme): array
+    {
+        return array_intersect_key($theme, array_flip(array(
+            'stylesheet', 'template', 'name', 'version', 'parent', 'block_theme',
+            'active', 'allowed', 'has_errors', 'update_available', 'update_version',
+            'source_policy', 'custom_replace_allowed', 'delete_allowed', 'native_update_allowed',
+        )));
+    }
+
+    private static function themeListSchema(): array
+    {
+        $schema = self::themeSchema();
+        $schema['required'] = array(
+            'stylesheet', 'template', 'name', 'version', 'parent', 'block_theme',
+            'active', 'allowed', 'has_errors', 'update_available', 'update_version',
+            'source_policy', 'custom_replace_allowed', 'delete_allowed', 'native_update_allowed',
+        );
+        return $schema;
+    }
+
     private static function themeSchema(): array
     {
         $properties = array();
-        foreach (array('stylesheet', 'template', 'name', 'description', 'version', 'author', 'theme_uri', 'requires_wp', 'requires_php', 'parent', 'update_version') as $field) {
+        foreach (array('stylesheet', 'template', 'name', 'description', 'version', 'author', 'theme_uri', 'requires_wp', 'requires_php', 'parent', 'update_version', 'recovery_scope', 'latest_recovery_id', 'latest_recovery_expires_at') as $field) {
             $properties[$field] = array('type' => 'string');
         }
-        foreach (array('block_theme', 'active', 'allowed', 'has_errors', 'update_available') as $field) {
+        $properties['source_policy'] = array('type' => 'string', 'enum' => array(PackageSourcePolicy::MANAGED, PackageSourcePolicy::EXTERNAL, PackageSourcePolicy::PROTECTED));
+        foreach (array('block_theme', 'active', 'allowed', 'has_errors', 'update_available', 'custom_replace_allowed', 'delete_allowed', 'native_update_allowed') as $field) {
             $properties[$field] = array('type' => 'boolean');
         }
         return array('type' => 'object', 'additionalProperties' => false, 'properties' => $properties, 'required' => array_keys($properties));

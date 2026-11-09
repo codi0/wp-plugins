@@ -4,9 +4,20 @@ declare(strict_types=1);
 
 namespace CodiMcp\Packages\Plugins;
 
+use CodiMcp\Core\PackageSourcePolicy;
+use CodiMcp\Core\Deployment\CodeRecoveryStore;
+
 final class PluginInspection
 {
     private const MAX_PER_PAGE = 100;
+
+    public function __construct(
+        private ?PackageSourcePolicy $sourcePolicy = null,
+        private ?CodeRecoveryStore $recoveries = null
+    ) {
+        $this->sourcePolicy ??= new PackageSourcePolicy();
+        $this->recoveries ??= new CodeRecoveryStore();
+    }
 
     public function canInspect(): bool
     {
@@ -23,7 +34,8 @@ final class PluginInspection
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $status = (string) ($input['status'] ?? 'all');
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
+        $detail = strtolower(trim((string) ($input['detail'] ?? 'summary')));
 
         $rows = array_values(array_filter($plugins, static function (array $plugin) use ($search, $status): bool {
             if ($search !== '') {
@@ -60,6 +72,9 @@ final class PluginInspection
         $total = count($rows);
         $offset = ($page - 1) * $perPage;
         $items = array_slice($rows, $offset, $perPage);
+        if ($detail !== 'full') {
+            $items = array_map([self::class, 'summary'], $items);
+        }
 
         return array(
             'items' => $items,
@@ -113,12 +128,15 @@ final class PluginInspection
             $update = $updateResponses[$pluginFile] ?? null;
             $network = isset($networkActive[$pluginFile]);
             $site = isset($siteActive[$pluginFile]);
+            $slug = dirname($pluginFile) === '.' ? basename($pluginFile, '.php') : dirname($pluginFile);
+            $policy = $this->sourcePolicy->state('plugin', $slug);
+            $latestRecovery = $this->recoveries->latest('plugin', $slug);
 
             $rows[] = array(
                 'kind' => 'plugin',
                 'plugin_file' => $pluginFile,
 
-                'slug' => dirname($pluginFile) === '.' ? basename($pluginFile, '.php') : dirname($pluginFile),
+                'slug' => $slug,
                 'name' => (string) ($data['Name'] ?? ''),
                 'description' => wp_strip_all_tags((string) ($data['Description'] ?? '')),
                 'version' => (string) ($data['Version'] ?? ''),
@@ -135,6 +153,13 @@ final class PluginInspection
                 'network_active' => $network,
                 'update_available' => is_object($update) || is_array($update),
                 'update_version' => is_object($update) ? (string) ($update->new_version ?? '') : (is_array($update) ? (string) ($update['new_version'] ?? '') : ''),
+                'source_policy' => $policy,
+                'custom_replace_allowed' => dirname($pluginFile) !== '.' && $this->sourcePolicy->canCustomReplace('plugin', $slug, 'entire'),
+                'delete_allowed' => dirname($pluginFile) !== '.' && $this->sourcePolicy->canDelete('plugin', $slug),
+                'native_update_allowed' => is_object($update) || is_array($update),
+                'recovery_scope' => 'code',
+                'latest_recovery_id' => is_array($latestRecovery) ? (string) ($latestRecovery['recovery_id'] ?? '') : '',
+                'latest_recovery_expires_at' => is_array($latestRecovery) ? (string) ($latestRecovery['expires_at'] ?? '') : '',
             );
         }
 
@@ -160,6 +185,13 @@ final class PluginInspection
                 'network_active' => is_multisite(),
                 'update_available' => false,
                 'update_version' => '',
+                'source_policy' => PackageSourcePolicy::EXTERNAL,
+                'custom_replace_allowed' => false,
+                'delete_allowed' => false,
+                'native_update_allowed' => false,
+                'recovery_scope' => 'code',
+                'latest_recovery_id' => '',
+                'latest_recovery_expires_at' => '',
             );
         }
 
@@ -182,6 +214,7 @@ final class PluginInspection
                 'status' => array('type' => 'string', 'enum' => array('all', 'active', 'inactive', 'site-active', 'network-active', 'update-available', 'must-use')),
                 'page' => array('type' => 'integer', 'minimum' => 1),
                 'per_page' => array('type' => 'integer', 'minimum' => 1, 'maximum' => self::MAX_PER_PAGE),
+                'detail' => array('type' => 'string', 'enum' => array('summary', 'full'), 'default' => 'summary'),
             ),
         );
     }
@@ -204,7 +237,7 @@ final class PluginInspection
             'type' => 'object',
             'additionalProperties' => false,
             'properties' => array(
-                'items' => array('type' => 'array', 'items' => self::pluginSchema()),
+                'items' => array('type' => 'array', 'items' => self::pluginListSchema()),
                 'total' => array('type' => 'integer'),
                 'page' => array('type' => 'integer'),
                 'per_page' => array('type' => 'integer'),
@@ -219,16 +252,39 @@ final class PluginInspection
         return self::pluginSchema();
     }
 
+    private static function summary(array $plugin): array
+    {
+        return array_intersect_key($plugin, array_flip(array(
+            'kind', 'plugin_file', 'slug', 'name', 'version',
+            'network_only', 'active', 'site_active', 'network_active',
+            'update_available', 'update_version', 'source_policy',
+            'custom_replace_allowed', 'delete_allowed', 'native_update_allowed',
+        )));
+    }
+
+    private static function pluginListSchema(): array
+    {
+        $schema = self::pluginSchema();
+        $schema['required'] = array(
+            'kind', 'plugin_file', 'slug', 'name', 'version',
+            'network_only', 'active', 'site_active', 'network_active',
+            'update_available', 'update_version', 'source_policy',
+            'custom_replace_allowed', 'delete_allowed', 'native_update_allowed',
+        );
+        return $schema;
+    }
+
     private static function pluginSchema(): array
     {
-        $strings = array('plugin_file', 'slug', 'name', 'description', 'version', 'author', 'plugin_uri', 'text_domain', 'requires_wp', 'requires_php', 'update_uri', 'update_version');
+        $strings = array('plugin_file', 'slug', 'name', 'description', 'version', 'author', 'plugin_uri', 'text_domain', 'requires_wp', 'requires_php', 'update_uri', 'update_version', 'recovery_scope', 'latest_recovery_id', 'latest_recovery_expires_at');
         $properties = array();
         foreach ($strings as $field) {
             $properties[$field] = array('type' => 'string');
         }
         $properties['kind'] = array('type' => 'string', 'enum' => array('plugin', 'must-use'));
         $properties['requires_plugins'] = array('type' => 'array', 'items' => array('type' => 'string'));
-        foreach (array('network_only', 'active', 'site_active', 'network_active', 'update_available') as $field) {
+        $properties['source_policy'] = array('type' => 'string', 'enum' => array(PackageSourcePolicy::MANAGED, PackageSourcePolicy::EXTERNAL, PackageSourcePolicy::PROTECTED));
+        foreach (array('network_only', 'active', 'site_active', 'network_active', 'update_available', 'custom_replace_allowed', 'delete_allowed', 'native_update_allowed') as $field) {
             $properties[$field] = array('type' => 'boolean');
         }
 

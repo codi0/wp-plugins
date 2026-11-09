@@ -16,6 +16,10 @@ if (($argv[1] ?? '') === '--file') {
         if (!is_subclass_of($className, \CodiMcpTest\Framework\TestCase::class)) {
             continue;
         }
+        $reflection = new ReflectionClass($className);
+        if ($reflection->isAbstract()) {
+            continue;
+        }
         $results[] = (new $className())->run();
     }
 

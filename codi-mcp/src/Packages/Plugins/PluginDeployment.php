@@ -2,9 +2,12 @@
 
 namespace CodiMcp\Packages\Plugins;
 
+use CodiMcp\Core\PackageSourcePolicy;
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
 use CodiMcp\Core\Downloads\DownloadCapabilityService;
 use CodiMcp\Core\Archives\ZipArchiveGuard;
+use CodiMcp\Core\Deployment\CodeRecoveryStore;
+use CodiMcp\Core\Deployment\PackageFingerprint;
 use CodiMcp\Core\Deployment\UpgraderResult;
 use CodiMcp\Core\Deployment\CorePackageInstaller;
 use CodiMcp\Core\Deployment\DeploymentRuntimeVerifier;
@@ -23,13 +26,19 @@ final class PluginDeployment
     private UploadCapabilityService $uploads;
     private ArtifactDownloadStore $downloads;
     private FolderReplacement $folderReplacement;
+    private PackageSourcePolicy $sourcePolicy;
+    private CodeRecoveryStore $recoveries;
+    private PackageFingerprint $fingerprints;
 
-    public function __construct(int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null)
+    public function __construct(int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null, ?PackageSourcePolicy $sourcePolicy = null, ?CodeRecoveryStore $recoveries = null, ?PackageFingerprint $fingerprints = null)
     {
         $this->maxZipBytes = $maxZipBytes;
         $this->uploads = $uploads ?? new UploadCapabilityService(new UploadStore($maxZipBytes));
         $this->downloads = $downloads ?? new ArtifactDownloadStore($maxZipBytes, $downloadChunkBytes);
         $this->folderReplacement = $folderReplacement ?? new FolderReplacement();
+        $this->sourcePolicy = $sourcePolicy ?? new PackageSourcePolicy();
+        $this->recoveries = $recoveries ?? new CodeRecoveryStore();
+        $this->fingerprints = $fingerprints ?? new PackageFingerprint();
     }
 
     public function canInstallPlugins(): bool
@@ -93,12 +102,35 @@ final class PluginDeployment
             return $selection;
         }
         $metadata = array('expected_plugin_slug' => $pluginSlug, 'replace' => $selection['replace']);
+        $root = defined('WP_PLUGIN_DIR') ? WP_PLUGIN_DIR . '/' . $pluginSlug : '';
+        if ($root !== '' && is_dir($root)) {
+            if (!$this->sourcePolicy->canCustomReplace('plugin', $pluginSlug, (string) $selection['replace'])) {
+                return new \WP_Error('codi_mcp_external_source', 'Installed external plugin source cannot be replaced by an uploaded custom package. Use the native WordPress update path or mark the package as managed in Codi MCP settings.');
+            }
+            if ($selection['replace'] !== 'file') {
+                try {
+                    $metadata['base_fingerprint'] = $this->fingerprints->directory($root);
+                } catch (\Throwable $error) {
+                    return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+                }
+            }
+        }
         if ($selection['replace'] === 'folder') {
             $target = $this->installedFolderTarget($pluginSlug, $selection['folder']);
             if ($target instanceof \WP_Error) {
                 return $target;
             }
             $captured = $this->folderReplacement->capture($target['root'], $selection['folder']);
+            if ($captured instanceof \WP_Error) {
+                return $captured;
+            }
+            $metadata['replacement'] = $captured;
+        } else if ($selection['replace'] === 'file') {
+            $target = $this->installedFileTarget($pluginSlug, $selection['file']);
+            if ($target instanceof \WP_Error) {
+                return $target;
+            }
+            $captured = $this->folderReplacement->captureFile($target['root'], $selection['file']);
             if ($captured instanceof \WP_Error) {
                 return $captured;
             }
@@ -117,7 +149,8 @@ final class PluginDeployment
         }
         $result['replace'] = $selection['replace'];
         $result['folder'] = $selection['folder'];
-        $result['instruction'] = 'PUT bytes directly to upload.url, then call codi/plugin-install with upload_id. Choose the wrapped folder layout for folder replacement.';
+        $result['file'] = $selection['file'];
+        $result['instruction'] = 'PUT upload.url, then call codi/plugin-install with upload_id.';
         return $result;
     }
 
@@ -142,12 +175,55 @@ final class PluginDeployment
             }
             $metadata = (array) ($upload['meta']['metadata'] ?? array());
             $mode = array_key_exists('replace', $metadata) ? $metadata['replace'] : 'entire';
+            $root = WP_PLUGIN_DIR . '/' . $slug;
+            $existed = is_dir($root);
+            $recovery = null;
+            if ($existed) {
+                if (!$this->sourcePolicy->canCustomReplace('plugin', $slug, (string) $mode)) {
+                    return new \WP_Error('codi_mcp_external_source', 'Installed external plugin source cannot be replaced by a custom package.');
+                }
+                $pluginFile = $this->pluginFileForSlug($slug);
+                if ($mode === 'file') {
+                    $selection = is_array($metadata['replacement'] ?? null) ? $metadata['replacement'] : array();
+                    $relativeFile = (string) ($selection['file'] ?? '');
+                    $before = (string) ($selection['fingerprint'] ?? '');
+                    $recovery = $this->recoveries->createFile('plugin', $slug, $root, $relativeFile, $before, array(
+                        'plugin_file' => $pluginFile,
+                        'before_version' => $this->pluginVersion($pluginFile),
+                        'operation' => 'custom_replace',
+                    ));
+                    if ($recovery instanceof \WP_Error) {
+                        return $recovery;
+                    }
+                } else {
+                    $expected = (string) ($metadata['base_fingerprint'] ?? '');
+                    try {
+                        $current = $this->fingerprints->directory($root);
+                    } catch (\Throwable $error) {
+                        return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+                    }
+                    if ($expected === '' || !hash_equals($expected, $current)) {
+                        return new \WP_Error('codi_mcp_source_changed', 'Installed plugin source changed after upload creation. Create a fresh upload against the current source.');
+                    }
+                    $recovery = $this->recoveries->create('plugin', $slug, $root, $slug, $current, array(
+                        'plugin_file' => $pluginFile,
+                        'before_version' => $this->pluginVersion($pluginFile),
+                        'operation' => 'custom_replace',
+                    ));
+                    if ($recovery instanceof \WP_Error) {
+                        return $recovery;
+                    }
+                }
+            }
             if ($mode === 'entire') {
                 $result = $this->installEntire($upload, $uploadId);
             } elseif ($mode === 'folder' && is_array($metadata['replacement'] ?? null)) {
                 $selection = $metadata['replacement'];
                 $package = $this->installedFolderTarget($slug, (string) ($selection['folder'] ?? ''));
                 if ($package instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedMutation($package, $recovery, $root);
+                    }
                     return $package;
                 }
                 $siteIds = (new NetworkAssetUsage())->pluginActiveSiteIds((string) $package['plugin_file']);
@@ -161,6 +237,45 @@ final class PluginDeployment
                     $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
                 );
                 if ($result instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedMutation($result, $recovery, $root);
+                    }
+                    return $result;
+                }
+                wp_clean_plugins_cache(true);
+                $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
+                $result = array(
+                    'action' => 'updated',
+                    'plugin_slug' => $slug,
+                    'plugin_file' => $package['plugin_file'],
+                    'name' => $package['name'],
+                    'version' => $package['version'],
+                    'active' => is_plugin_active($package['plugin_file']),
+                    'network_active' => is_multisite() && is_plugin_active_for_network($package['plugin_file']),
+                );
+            } elseif ($mode === 'file' && is_array($metadata['replacement'] ?? null)) {
+                $selection = $metadata['replacement'];
+                $package = $this->installedFileTarget($slug, (string) ($selection['file'] ?? ''));
+                if ($package instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedFileMutation($package, $recovery, $root, (string) ($selection['file'] ?? ''));
+                    }
+                    return $package;
+                }
+                $siteIds = (new NetworkAssetUsage())->pluginActiveSiteIds((string) $package['plugin_file']);
+                $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+                $result = $replacement->replaceFile(
+                    $package['root'],
+                    $selection,
+                    (string) $upload['path'],
+                    $slug,
+                    $uploadId,
+                    $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+                );
+                if ($result instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedFileMutation($result, $recovery, $root, (string) ($selection['file'] ?? ''));
+                    }
                     return $result;
                 }
                 wp_clean_plugins_cache(true);
@@ -175,11 +290,38 @@ final class PluginDeployment
                     'network_active' => is_multisite() && is_plugin_active_for_network($package['plugin_file']),
                 );
             } else {
-                return new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
+                $error = new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
+                if (is_array($recovery)) {
+                    $this->finalizeFailedMutation($error, $recovery, $root);
+                }
+                return $error;
+            }
+            if ($result instanceof \WP_Error) {
+                if (is_array($recovery)) {
+                    $this->finalizeFailedMutation($result, $recovery, $root);
+                }
+                return $result;
+            }
+            if (is_array($recovery)) {
+                try {
+                    $after = $mode === 'file'
+                        ? $this->fingerprints->file($root . '/' . (string) ($metadata['replacement']['file'] ?? ''))
+                        : $this->fingerprints->directory($root);
+                } catch (\Throwable $error) {
+                    return new \WP_Error('codi_mcp_recovery_required', 'Plugin changed successfully but its post-change fingerprint could not be recorded. The recovery snapshot has been retained.', array('recovery_id' => $recovery['recovery_id']));
+                }
+                $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $after, (string) ($result['version'] ?? ''));
+                if ($committed instanceof \WP_Error) {
+                    return $committed;
+                }
+                $result['recovery_id'] = (string) $committed['recovery_id'];
+                $result['recovery_expires_at'] = (string) $committed['expires_at'];
+                $result['recovery_scope'] = 'code';
             }
             if (is_array($result)) {
                 $result['replace'] = $mode;
-                $result['folder'] = $mode === 'folder' ? $metadata['replacement']['folder'] : '';
+                $result['folder'] = $mode === 'folder' ? (string) ($metadata['replacement']['folder'] ?? '') : '';
+                $result['file'] = $mode === 'file' ? (string) ($metadata['replacement']['file'] ?? '') : '';
             }
             return $result;
         });
@@ -389,19 +531,160 @@ final class PluginDeployment
             return new \WP_Error('codi_mcp_plugin_active', 'Plugin is active on the network or at least one site. Deactivate it everywhere before deleting it.');
         }
 
+        $slug = dirname($pluginFile);
+        if ($slug === '.' || !$this->sourcePolicy->canDelete('plugin', $slug)) {
+            return new \WP_Error('codi_mcp_external_source', 'Only directory-backed plugins explicitly marked as managed may be deleted by Codi MCP.');
+        }
+        $root = WP_PLUGIN_DIR . '/' . $slug;
+        try {
+            $before = $this->fingerprints->directory($root);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+        }
+        $recovery = $this->recoveries->create('plugin', $slug, $root, $slug, $before, array(
+            'plugin_file' => $pluginFile,
+            'before_version' => $this->pluginVersion($pluginFile),
+            'operation' => 'delete',
+        ));
+        if ($recovery instanceof \WP_Error) {
+            return $recovery;
+        }
+
         $result = delete_plugins([$pluginFile]);
         if (is_wp_error($result)) {
+            $this->finalizeFailedMutation($result, $recovery, $root);
             return $result;
         }
         if ($result === null) {
-            return new \WP_Error('codi_mcp_filesystem_credentials_required', 'WordPress requires interactive filesystem credentials and cannot delete this plugin through MCP.');
+            $error = new \WP_Error('codi_mcp_filesystem_credentials_required', 'WordPress requires interactive filesystem credentials and cannot delete this plugin through MCP.');
+            $this->finalizeFailedMutation($error, $recovery, $root);
+            return $error;
         }
         if ($result !== true) {
-            return new \WP_Error('codi_mcp_plugin_delete_failed', 'WordPress could not delete the selected plugin.');
+            $error = new \WP_Error('codi_mcp_plugin_delete_failed', 'WordPress could not delete the selected plugin.');
+            $this->finalizeFailedMutation($error, $recovery, $root);
+            return $error;
         }
 
         wp_clean_plugins_cache(true);
-        return ['plugin_file' => $pluginFile, 'deleted' => true];
+        $committed = $this->recoveries->commit((string) $recovery['recovery_id'], PackageFingerprint::absent(), '');
+        if ($committed instanceof \WP_Error) {
+            return $committed;
+        }
+        return [
+            'plugin_file' => $pluginFile,
+            'deleted' => true,
+            'recovery_id' => (string) $committed['recovery_id'],
+            'recovery_expires_at' => (string) $committed['expires_at'],
+            'recovery_scope' => 'code',
+        ];
+    }
+
+    public function update($input)
+    {
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+
+        $pluginFile = plugin_basename((string) (is_array($input) ? ($input['plugin_file'] ?? '') : ''));
+        $plugins = get_plugins();
+        if ($pluginFile === '' || !isset($plugins[$pluginFile])) {
+            return new \WP_Error('codi_mcp_plugin_not_found', 'Installed plugin was not found.');
+        }
+        $updates = function_exists('get_site_transient') ? get_site_transient('update_plugins') : null;
+        $responses = is_object($updates) && is_array($updates->response ?? null) ? $updates->response : array();
+        if (!isset($responses[$pluginFile])) {
+            return new \WP_Error('codi_mcp_update_unavailable', 'WordPress does not currently advertise an update for this plugin.');
+        }
+        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+        $slug = dirname($pluginFile);
+        if ($slug === '.') {
+            return new \WP_Error('codi_mcp_recovery_unsupported', 'Native updates through Codi require a directory-backed plugin so code recovery can be guaranteed.');
+        }
+        $root = WP_PLUGIN_DIR . '/' . $slug;
+        return $this->folderReplacement->locked($root, function () use ($pluginFile, $slug, $root) {
+            try {
+                $before = $this->fingerprints->directory($root);
+            } catch (\Throwable $error) {
+                return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+            }
+            $recovery = $this->recoveries->create('plugin', $slug, $root, $slug, $before, array(
+                'plugin_file' => $pluginFile,
+                'before_version' => $this->pluginVersion($pluginFile),
+                'operation' => 'native_update',
+            ));
+            if ($recovery instanceof \WP_Error) {
+                return $recovery;
+            }
+            $siteIds = (new NetworkAssetUsage())->pluginActiveSiteIds($pluginFile);
+            $skin = new \Automatic_Upgrader_Skin();
+            $upgrader = new \Plugin_Upgrader($skin);
+            $bufferLevel = ob_get_level();
+            ob_start();
+            try {
+                $raw = $upgrader->upgrade($pluginFile);
+            } catch (\Throwable $error) {
+                $raw = new \WP_Error('codi_mcp_update_failed', 'WordPress plugin update failed: ' . $error->getMessage());
+            } finally {
+                while (ob_get_level() > $bufferLevel) {
+                    ob_end_clean();
+                }
+            }
+            $error = UpgraderResult::error($raw, 'plugin');
+            if ($error instanceof \WP_Error) {
+                $this->finalizeFailedMutation($error, $recovery, $root);
+                return $error;
+            }
+            wp_clean_plugins_cache(true);
+            try {
+                $after = $this->fingerprints->directory($root);
+            } catch (\Throwable $exception) {
+                return new \WP_Error('codi_mcp_recovery_required', 'Plugin update completed but the resulting source could not be fingerprinted. The recovery snapshot has been retained.', array('recovery_id' => $recovery['recovery_id']));
+            }
+            $version = $this->pluginVersion($pluginFile);
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $after, $version);
+            if ($committed instanceof \WP_Error) {
+                return $committed;
+            }
+            if ($siteIds !== array()) {
+                $verified = (new DeploymentRuntimeVerifier())->verify($siteIds);
+                if ($verified !== true) {
+                    $restored = $this->restoreCommittedUnlocked($committed, $root, $pluginFile, $siteIds);
+                    if ($restored instanceof \WP_Error) {
+                        return new \WP_Error('codi_mcp_recovery_required', 'Plugin update failed runtime verification and automatic code restoration did not complete.', array('recovery_id' => $committed['recovery_id'], 'cause' => $restored->get_error_code()));
+                    }
+                    return new \WP_Error('codi_mcp_update_rolled_back', 'Plugin update failed runtime verification; the previous code was restored.', array('recovery_id' => $committed['recovery_id']));
+                }
+            }
+            return array(
+                'action' => 'updated',
+                'plugin_file' => $pluginFile,
+                'version' => $version,
+                'recovery_id' => (string) $committed['recovery_id'],
+                'recovery_expires_at' => (string) $committed['expires_at'],
+                'recovery_scope' => 'code',
+            );
+        });
+    }
+
+    public function restore($input)
+    {
+        $recoveryId = trim((string) (is_array($input) ? ($input['recovery_id'] ?? '') : ''));
+        $artifact = $this->recoveries->artifact($recoveryId, 'plugin');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        $record = (array) $artifact['record'];
+        $slug = (string) ($record['identity'] ?? '');
+        $pluginFile = (string) ($record['metadata']['plugin_file'] ?? '');
+        $root = WP_PLUGIN_DIR . '/' . $slug;
+        return $this->folderReplacement->locked($root, function () use ($record, $root, $pluginFile) {
+            $siteIds = $pluginFile !== '' ? (new NetworkAssetUsage())->pluginActiveSiteIds($pluginFile) : array();
+            if (($record['metadata']['scope'] ?? '') === 'file') {
+                return $this->restoreFileCommittedUnlocked($record, $root, $pluginFile, $siteIds);
+            }
+            return $this->restoreCommittedUnlocked($record, $root, $pluginFile, $siteIds);
+        });
     }
 
     /** Package policy stays here; Core only receives an already resolved root. */
@@ -438,6 +721,41 @@ final class PluginDeployment
             );
         }
         return $selected ?? new \WP_Error('codi_mcp_plugin_not_found', 'Folder replacement requires an installed directory-backed plugin.');
+    }
+
+    private function installedFileTarget(string $slug, string $file): array|\WP_Error
+    {
+        if (!ReplacementSelection::validFile($file)) {
+            return new \WP_Error('codi_mcp_bad_replacement', 'Select one relative existing file.');
+        }
+        if (defined('CODI_MCP_PLUGIN_BASENAME') && dirname(CODI_MCP_PLUGIN_BASENAME) === $slug) {
+            return new \WP_Error('codi_mcp_self_replace', 'Codi MCP cannot replace its own files.');
+        }
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (!function_exists('get_filesystem_method')) {
+            require_once ABSPATH . 'wp-admin/includes/file.php';
+        }
+        $plugins = get_plugins();
+        ksort($plugins, SORT_STRING);
+        $selected = null;
+        foreach ($plugins as $pluginFile => $data) {
+            if (!str_starts_with($pluginFile, $slug . '/')) {
+                continue;
+            }
+            $relative = substr($pluginFile, strlen($slug) + 1);
+            if ($relative === $file) {
+                return new \WP_Error('codi_mcp_plugin_entrypoint', 'An installed plugin entry point cannot be replaced as a single file.');
+            }
+            $selected ??= array(
+                'root' => WP_PLUGIN_DIR . '/' . $slug,
+                'plugin_file' => $pluginFile,
+                'name' => (string) ($data['Name'] ?? ''),
+                'version' => (string) ($data['Version'] ?? ''),
+            );
+        }
+        return $selected ?? new \WP_Error('codi_mcp_plugin_not_found', 'File replacement requires an installed directory-backed plugin.');
     }
 
     private function validateUploadDescriptor(string $pluginSlug, int $size, string $sha256)
@@ -569,6 +887,160 @@ final class PluginDeployment
             'network_active' => is_multisite() && is_plugin_active_for_network($pluginFile),
             'scope' => $scope,
         ];
+    }
+
+    private function pluginFileForSlug(string $slug): string
+    {
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        foreach (get_plugins() as $file => $data) {
+            if (str_starts_with((string) $file, $slug . '/')) {
+                return (string) $file;
+            }
+        }
+        return '';
+    }
+
+    private function pluginVersion(string $pluginFile): string
+    {
+        if ($pluginFile === '') {
+            return '';
+        }
+        if (!function_exists('get_plugins')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        $plugins = get_plugins();
+        return isset($plugins[$pluginFile]) && is_array($plugins[$pluginFile]) ? (string) ($plugins[$pluginFile]['Version'] ?? '') : '';
+    }
+
+    private function finalizeFailedMutation(\WP_Error $error, array $recovery, string $root): void
+    {
+        try {
+            $current = $this->fingerprints->current($root);
+            if (hash_equals((string) $recovery['before_fingerprint'], $current)) {
+                $this->recoveries->abandon((string) $recovery['recovery_id']);
+                return;
+            }
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $current, '');
+            if (is_array($committed)) {
+                $error->add_data(array('recovery_id' => $committed['recovery_id'], 'recovery_scope' => 'code'));
+            }
+        } catch (\Throwable) {
+            $error->add_data(array('recovery_id' => (string) ($recovery['recovery_id'] ?? ''), 'recovery_scope' => 'code'));
+        }
+    }
+
+    private function finalizeFailedFileMutation(\WP_Error $error, array $recovery, string $root, string $relativeFile): void
+    {
+        try {
+            $current = $this->fingerprints->file($root . '/' . $relativeFile);
+            if (hash_equals((string) $recovery['before_fingerprint'], $current)) {
+                $this->recoveries->abandon((string) $recovery['recovery_id']);
+                return;
+            }
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $current, '');
+            if (is_array($committed)) {
+                $error->add_data(array('recovery_id' => $committed['recovery_id'], 'recovery_scope' => 'code'));
+            }
+        } catch (\Throwable) {
+            $error->add_data(array('recovery_id' => (string) ($recovery['recovery_id'] ?? ''), 'recovery_scope' => 'code'));
+        }
+    }
+
+    private function restoreFileCommittedUnlocked(array $record, string $root, string $pluginFile, array $siteIds)
+    {
+        $recoveryId = (string) ($record['recovery_id'] ?? '');
+        $relativeFile = (string) ($record['metadata']['file'] ?? '');
+        if (!ReplacementSelection::validFile($relativeFile)) {
+            return new \WP_Error('codi_mcp_recovery_integrity', 'File recovery metadata is invalid.');
+        }
+        $artifact = $this->recoveries->artifact($recoveryId, 'plugin');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        $selection = array(
+            'root' => (string) realpath($root),
+            'file' => $relativeFile,
+            'fingerprint' => (string) ($record['after_fingerprint'] ?? ''),
+        );
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+        $restored = $this->folderReplacement->replaceFile(
+            $root,
+            $selection,
+            (string) $artifact['path'],
+            (string) ($record['identity'] ?? ''),
+            bin2hex(random_bytes(16)),
+            $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+        );
+        if ($restored instanceof \WP_Error) {
+            if ($restored->get_error_code() === 'codi_mcp_file_conflict') {
+                return new \WP_Error('codi_mcp_restore_conflict', 'Selected plugin file has changed since this recovery point was created; restore was refused.');
+            }
+            return $restored;
+        }
+        wp_clean_plugins_cache(true);
+        try {
+            $fingerprint = $this->fingerprints->file($root . '/' . $relativeFile);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_restore_verification', $error->getMessage());
+        }
+        if (!hash_equals((string) ($record['before_fingerprint'] ?? ''), $fingerprint)) {
+            return new \WP_Error('codi_mcp_restore_verification', 'Restored plugin file does not match the recovery fingerprint.');
+        }
+        $this->recoveries->markRestored($recoveryId);
+        return array(
+            'plugin_file' => $pluginFile,
+            'version' => $this->pluginVersion($pluginFile),
+            'restored' => true,
+            'recovery_id' => $recoveryId,
+            'recovery_scope' => 'code',
+        );
+    }
+
+    private function restoreCommittedUnlocked(array $record, string $root, string $pluginFile, array $siteIds)
+    {
+        $recoveryId = (string) ($record['recovery_id'] ?? '');
+        $artifact = $this->recoveries->artifact($recoveryId, 'plugin');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        try {
+            $current = $this->fingerprints->current($root);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+        }
+        if (!hash_equals((string) ($record['after_fingerprint'] ?? ''), $current)) {
+            return new \WP_Error('codi_mcp_restore_conflict', 'Installed plugin source has changed since this recovery point was created; restore was refused.');
+        }
+        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+        $skin = new \Automatic_Upgrader_Skin();
+        $upgrader = new \Plugin_Upgrader($skin);
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+        $result = (new CorePackageInstaller(
+            $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+        ))->install($upgrader, (string) $artifact['path'], 'plugin', (string) ($record['identity'] ?? ''), WP_PLUGIN_DIR, $siteIds !== array());
+        $error = UpgraderResult::error($result, 'plugin');
+        if ($error instanceof \WP_Error) {
+            return $error;
+        }
+        wp_clean_plugins_cache(true);
+        try {
+            $restored = $this->fingerprints->directory($root);
+        } catch (\Throwable $exception) {
+            return new \WP_Error('codi_mcp_restore_verification', $exception->getMessage());
+        }
+        if (!hash_equals((string) ($record['before_fingerprint'] ?? ''), $restored)) {
+            return new \WP_Error('codi_mcp_restore_verification', 'Restored plugin source does not match the recovery fingerprint.');
+        }
+        $this->recoveries->markRestored($recoveryId);
+        return array(
+            'plugin_file' => $pluginFile,
+            'version' => $this->pluginVersion($pluginFile),
+            'restored' => true,
+            'recovery_id' => $recoveryId,
+            'recovery_scope' => 'code',
+        );
     }
 
 }

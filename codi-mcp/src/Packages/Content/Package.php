@@ -108,8 +108,8 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'registered-blocks-list',
             'List registered block types',
-            'List Gutenberg block types, attributes, supports, rendering mode, and source attribution.',
-            $input,
+            'List Gutenberg block types compactly by default; detail=schema includes attributes, supports, and asset handles.',
+            $this->registeredBlocksInputSchema(),
             $this->pagedOutputSchema($this->blockSchema()),
             [$this, 'registeredBlocksList']
         );
@@ -146,19 +146,19 @@ final class Package implements AbilityPackage
         $this->registerMutation('term-create', 'Create taxonomy term', 'Create one term in an existing taxonomy using that taxonomy\'s manage_terms capability.', $this->termCreateInputSchema(), $this->termSchema(), [$this, 'termCreate'], [$this, 'canCreateTerm'], false, false);
         $this->registerMutation('term-update', 'Update taxonomy term', 'Update one exact existing taxonomy term using that taxonomy\'s edit_terms capability.', $this->termUpdateInputSchema(), $this->termSchema(), [$this, 'termUpdate'], [$this, 'canUpdateTerm'], true, true);
         $this->registerMutation('term-delete', 'Delete taxonomy term', 'Delete one exact existing taxonomy term using that taxonomy\'s delete_terms capability.', $this->termDeleteInputSchema(), $this->strictObject(array('taxonomy' => array('type' => 'string'), 'term_id' => array('type' => 'integer'), 'deleted' => array('type' => 'boolean'))), [$this, 'termDelete'], [$this, 'canDeleteTerm'], true, false);
-        $this->registerMutation('post-terms-update', 'Update post taxonomy terms', 'Set, add, or remove existing term IDs for one post or custom-post-type object. This never creates terms implicitly and verifies the taxonomy is registered for the post type.', $this->postTermsInputSchema(), $this->postTermsOutputSchema(), [$this, 'postTermsUpdate'], [$this, 'canAssignTerms'], true, true);
+        $this->registerMutation('post-terms-update', 'Update post taxonomy terms', 'Set, add, or remove existing term IDs on a post. Never creates terms; taxonomy must be registered for the post type.', $this->postTermsInputSchema(), $this->postTermsOutputSchema(), [$this, 'postTermsUpdate'], [$this, 'canAssignTerms'], true, true);
         $this->registerMutation('registered-meta-set', 'Set registered metadata', 'Set one registered, REST-exposed post or term metadata value from JSON.', $this->registeredMetaSetInputSchema(), $this->registeredMetaValueSchema(), [$this, 'registeredMetaSet'], [$this, 'canEditRegisteredMeta'], true, true);
         $this->registerMutation('registered-meta-delete', 'Delete registered metadata', 'Delete one registered, REST-exposed post or term metadata value.', $this->registeredMetaTargetInputSchema(), $this->strictObject(array('object_type' => array('type' => 'string'), 'object_id' => array('type' => 'integer'), 'key' => array('type' => 'string'), 'deleted' => array('type' => 'boolean'))), [$this, 'registeredMetaDelete'], [$this, 'canEditRegisteredMeta'], true, true);
         $this->registerMutation('post-author-set', 'Set post author', 'Assign a permitted site user as a post/page author.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1), 'author_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'author_id' => array('type' => 'integer'), 'updated' => array('type' => 'boolean'))), [$this, 'postAuthorSet'], [$this, 'canSetAuthor'], true, true);
-        $this->registerMutation('post-attributes-update', 'Update structured post attributes', 'Update post parent, menu order, excerpt, comments/pings, or sticky status. Use Presentation for blocks and other Content tools for identity, status, author, or relationships.', $this->postAttributesInputSchema(), $this->postAttributesOutputSchema(), [$this, 'postAttributesUpdate'], [$this, 'canUpdatePostAttributes'], true, true);
+        $this->registerMutation('post-attributes-update', 'Update structured post attributes', 'Update parent, menu order, excerpt, comments/pings, or sticky status. Use Presentation for body blocks.', $this->postAttributesInputSchema(), $this->postAttributesOutputSchema(), [$this, 'postAttributesUpdate'], [$this, 'canUpdatePostAttributes'], true, true);
         $this->registerMutation('post-create', 'Create content entity', 'Create a draft post, page, or custom post type. Use Presentation to add block content.', $this->postCreateInputSchema(), $this->postEntitySchema(), [$this, 'postCreate'], [$this, 'canCreatePost'], false, false);
         $this->registerMutation('post-identity-update', 'Update content identity', 'Update a post/page title or slug. Use Presentation for body blocks.', $this->postIdentityInputSchema(), $this->postEntitySchema(), [$this, 'postIdentityUpdate'], [$this, 'canEditPost'], true, true);
         $this->registerMutation('post-status-update', 'Update publication status', 'Change post/page publication status. Scheduling future publication requires publish_at.', $this->postStatusInputSchema(), $this->postEntitySchema(), [$this, 'postStatusUpdate'], [$this, 'canUpdatePostStatus'], true, true);
-        $this->registerMutation('post-featured-media-set', 'Set featured media', 'Set or clear the featured-media relationship owned by one post entity. attachment_id=0 clears it; nonzero IDs must identify an existing Media attachment.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1), 'attachment_id' => array('type' => 'integer', 'minimum' => 0))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'attachment_id' => array('type' => 'integer'), 'updated' => array('type' => 'boolean'))), [$this, 'postFeaturedMediaSet'], [$this, 'canEditPost'], true, true);
+        $this->registerMutation('post-featured-media-set', 'Set featured media', 'Set or clear featured attachment for a post; attachment_id=0 clears it.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1), 'attachment_id' => array('type' => 'integer', 'minimum' => 0))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'attachment_id' => array('type' => 'integer'), 'updated' => array('type' => 'boolean'))), [$this, 'postFeaturedMediaSet'], [$this, 'canEditPost'], true, true);
         $this->registerMutation('post-duplicate', 'Duplicate content entity', 'Copy a post/page to a new draft, including its current body. Use Presentation for subsequent block edits.', $this->postDuplicateInputSchema(), $this->postEntitySchema(), [$this, 'postDuplicate'], [$this, 'canDuplicatePost'], false, false);
         $this->registerMutation('post-trash', 'Trash content entity', 'Move one Content-owned post entity to WordPress trash.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'trashed' => array('type' => 'boolean'))), [$this, 'postTrash'], [$this, 'canDeletePost'], true, true);
         $this->registerMutation('post-restore', 'Restore content entity', 'Restore one Content-owned post entity from WordPress trash.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->postEntitySchema(), [$this, 'postRestore'], [$this, 'canDeletePost'], true, true);
-        $this->registerMutation('post-delete', 'Delete content entity', 'Permanently delete a post/page. Use Media for attachments and Presentation for templates, patterns, or navigation.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'deleted' => array('type' => 'boolean'))), [$this, 'postDelete'], [$this, 'canDeletePost'], true, false);
+        $this->registerMutation('post-delete', 'Delete content entity', 'Permanently delete a post/page. Attachments are managed separately by Media.', $this->strictObject(array('post_id' => array('type' => 'integer', 'minimum' => 1))), $this->strictObject(array('post_id' => array('type' => 'integer'), 'deleted' => array('type' => 'boolean'))), [$this, 'postDelete'], [$this, 'canDeletePost'], true, false);
     }
 
     public function postTypesList($input = array())
@@ -299,6 +299,17 @@ final class Package implements AbilityPackage
         );
     }
 
+    private function registeredBlocksInputSchema(): array
+    {
+        $schema = $this->pagedSearchInputSchema();
+        $schema['properties']['detail'] = array(
+            'type' => 'string',
+            'enum' => array('summary', 'schema'),
+            'default' => 'summary',
+        );
+        return $schema;
+    }
+
     private function pagedOutputSchema(array $itemSchema): array
     {
         return array(
@@ -424,11 +435,12 @@ final class Package implements AbilityPackage
             'namespace' => array('type' => 'string'),
             'title' => array('type' => 'string'),
             'api_version' => array('type' => 'integer'),
+            'dynamic' => array('type' => 'boolean'),
+            'source' => array('type' => 'string'),
             'parent' => $this->stringArraySchema(),
             'ancestor' => $this->stringArraySchema(),
             'attributes' => array('type' => 'array', 'items' => $this->strictObject($attributeProperties)),
             'supports_json' => array('type' => 'string'),
-            'dynamic' => array('type' => 'boolean'),
             'editor_scripts' => $this->stringArraySchema(),
             'scripts' => $this->stringArraySchema(),
             'view_scripts' => $this->stringArraySchema(),
@@ -436,9 +448,13 @@ final class Package implements AbilityPackage
             'editor_styles' => $this->stringArraySchema(),
             'styles' => $this->stringArraySchema(),
             'view_styles' => $this->stringArraySchema(),
-            'source' => array('type' => 'string'),
         );
-        return $this->strictObject($properties);
+        return array(
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => $properties,
+            'required' => array('name', 'namespace', 'title', 'api_version', 'dynamic', 'source'),
+        );
     }
 
     private function registeredMetaInputSchema(): array

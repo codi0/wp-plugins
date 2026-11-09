@@ -65,7 +65,8 @@ final class MultisitePackageTest extends TestCase
         $abilityProperties = (array) ($abilitiesDescriptor['output_schema']['properties']['abilities']['items']['properties'] ?? array());
         $this->assertSame(array('name', 'description', 'input_schema', 'annotations'), array_keys($abilityProperties));
         $this->assertSame(array('abilities'), array_keys((array) ($abilitiesDescriptor['output_schema']['properties'] ?? array())));
-        $this->assertSame(array('result'), array_keys((array) ($callDescriptor['output_schema']['properties'] ?? array())));
+        $this->assertSame(array('result', 'error'), array_keys((array) ($callDescriptor['output_schema']['properties'] ?? array())));
+        $this->assertSame(array('result'), (array) ($callDescriptor['output_schema']['required'] ?? array()));
         $this->assertArrayHasKey('codi-mcp/v1/federation', (array) $GLOBALS['codi_mcp_test_rest_routes']);
 
         \codi_mcp_test_reset_environment();
@@ -286,6 +287,34 @@ final class MultisitePackageTest extends TestCase
         $this->assertSame(array('count' => 0), $local->execute('example/no-input'));
     }
 
+    public function test_site_call_returns_target_failures_as_structured_delegated_results(): void
+    {
+        wp_register_ability('example/failure', array(
+            'label' => 'Failing ability',
+            'description' => 'Returns a controlled WordPress error.',
+            'category' => 'example',
+            'input_schema' => array('type' => 'object', 'additionalProperties' => false, 'properties' => array()),
+            'execute_callback' => static fn (array $input): \WP_Error => new \WP_Error('fixture_failure', 'Fixture failure.'),
+            'permission_callback' => static fn (array $input): bool => current_user_can('read'),
+            'meta' => array('public' => true),
+        ));
+
+        $policy = $this->policy();
+        $policy->saveSelection(array('example/failure'));
+        $package = new Package();
+        $package->registerRuntime($this->runtime($policy));
+        $package->registerAbilities();
+        $call = $GLOBALS['codi_mcp_test_registered_abilities']['codi/site-call']['execute_callback'];
+
+        $response = $call(array('site_id' => 1, 'ability' => 'example/failure', 'arguments' => array()));
+        $this->assertFalse(is_wp_error($response));
+        $this->assertSame(null, $response['result'] ?? null);
+        $this->assertSame('fixture_failure', (string) ($response['error']['code'] ?? ''));
+        $this->assertSame('Fixture failure.', (string) ($response['error']['message'] ?? ''));
+        $this->assertSame(null, $response['error']['status'] ?? null);
+        $this->assertSame(array(), (array) ($response['error']['details'] ?? array()));
+    }
+
     public function test_remote_client_sends_non_redirecting_signed_request_to_target_runtime(): void
     {
         $url = 'https://docs.example.test/wp-json/codi-mcp/v1/federation';
@@ -333,6 +362,35 @@ final class MultisitePackageTest extends TestCase
         $this->assertSame('fixture_failure', (string) $error->get_error_code());
         $this->assertSame('Fixture failure.', (string) $error->get_error_message());
         $this->assertSame(409, (int) (($error->get_error_data()['status'] ?? 0)));
+    }
+
+    public function test_remote_client_reports_bounded_metadata_for_invalid_federation_payloads(): void
+    {
+        $url = 'https://docs.example.test/wp-json/codi-mcp/v1/federation';
+        $body = '<html>unexpected upstream output</html>';
+        $GLOBALS['codi_mcp_test_wp_remote_post_responses'][$url] = array(
+            'response' => array('code' => 200),
+            'headers' => array('content-type' => 'text/html; charset=UTF-8'),
+            'body' => $body,
+        );
+
+        $sites = new SiteDirectory();
+        $local = new LocalAbilityRuntime($this->runtime($this->policy()), array('codi/sites', 'codi/site-abilities', 'codi/site-call'));
+        $signer = new FederationSigner($sites, 'test-federation-secret', static fn (): int => 3000, static fn (): string => '00112233445566778899aabbccddeeff');
+        $client = new FederationClient($sites, $signer, $local);
+
+        $error = $client->abilities(2, 7);
+        $this->assertTrue(is_wp_error($error));
+        $this->assertSame('codi_multisite_bad_remote_response', (string) $error->get_error_code());
+        $data = (array) $error->get_error_data();
+        $details = (array) ($data['details'] ?? array());
+        $this->assertSame(502, (int) ($data['status'] ?? 0));
+        $this->assertSame(200, (int) ($details['remote_status'] ?? 0));
+        $this->assertSame('text/html; charset=UTF-8', (string) ($details['content_type'] ?? ''));
+        $this->assertSame(strlen($body), (int) ($details['body_bytes'] ?? 0));
+        $this->assertSame(hash('sha256', $body), (string) ($details['body_sha256'] ?? ''));
+        $this->assertTrue((string) ($details['json_error'] ?? '') !== '');
+        $this->assertFalse(str_contains((string) json_encode($details), 'unexpected upstream output'));
     }
 
     public function test_assertions_are_bound_to_body_site_operation_expiry_and_one_time_nonce(): void
@@ -408,6 +466,54 @@ final class MultisitePackageTest extends TestCase
         $this->assertTrue(is_wp_error($replay));
         $this->assertSame('codi_multisite_replay', (string) ($replay->code ?? ''));
     }
+
+    public function test_federation_receiver_contains_unexpected_ability_output_without_exposing_content(): void
+    {
+        $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 2;
+        wp_set_current_user(0);
+
+        wp_register_ability('example/noisy', array(
+            'label' => 'Noisy ability',
+            'description' => 'Emits output while returning structured data.',
+            'category' => 'example',
+            'input_schema' => array('type' => 'object', 'additionalProperties' => false, 'properties' => array()),
+            'output_schema' => array('type' => 'object'),
+            'execute_callback' => static function (array $input): array {
+                echo 'private unexpected output';
+                return array('ok' => true);
+            },
+            'permission_callback' => static fn (array $input): bool => current_user_can('read'),
+            'meta' => array('public' => true),
+        ));
+
+        $policy = $this->policy();
+        $policy->saveSelection(array('example/noisy'));
+        $sites = new SiteDirectory();
+        $local = new LocalAbilityRuntime($this->runtime($policy), array('codi/sites', 'codi/site-abilities', 'codi/site-call'));
+        $clock = static fn (): int => 2000;
+        $signer = new FederationSigner($sites, 'test-federation-secret', $clock, static fn (): string => '99887766554433221100ffeeddccbbaa');
+        $controller = new FederationController($sites, $signer, new ReplayGuard($sites, $clock), $local);
+
+        $body = json_encode(array(
+            'operation' => 'execute',
+            'payload' => array('ability' => 'example/noisy', 'arguments' => array()),
+        ), JSON_UNESCAPED_SLASHES);
+        $this->assertTrue(is_string($body));
+        $token = $signer->issue(2, 7, 'execute', (string) $body);
+        $request = new MultisiteRequestDouble((string) $body, $token);
+
+        $this->assertTrue($controller->authorize($request) === true);
+        ob_start();
+        $response = $controller->handle($request);
+        $escaped = (string) ob_get_clean();
+
+        $this->assertSame('', $escaped);
+        $this->assertSame(true, (bool) ($response['result']['ok'] ?? false));
+        $this->assertSame(strlen('private unexpected output'), (int) ($response['unexpected_output']['bytes'] ?? 0));
+        $this->assertSame(hash('sha256', 'private unexpected output'), (string) ($response['unexpected_output']['sha256'] ?? ''));
+        $this->assertFalse(str_contains((string) json_encode($response), 'private unexpected output'));
+    }
+
     public function test_federation_receiver_serializes_ability_errors_inside_successful_transport_response(): void
     {
         $GLOBALS['codi_mcp_test_wp_current_blog_id'] = 2;

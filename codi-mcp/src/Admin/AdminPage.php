@@ -6,6 +6,7 @@ use CodiMcp\Auth\OAuthProfile;
 use CodiMcp\Auth\OAuthServer;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\PackageAvailabilityPolicy;
+use CodiMcp\Core\PackageSourcePolicy;
 use CodiMcp\Exposure\ExposurePolicy;
 
 final class AdminPage
@@ -16,6 +17,7 @@ final class AdminPage
     private OAuthProfile $profile;
     private OAuthServer $oauthServer;
     private PackageAvailabilityPolicy $availability;
+    private PackageSourcePolicy $sourcePolicy;
 
     /** @var AbilityPackage[] */
     private array $packages;
@@ -26,12 +28,14 @@ final class AdminPage
         OAuthProfile $profile,
         OAuthServer $oauthServer,
         PackageAvailabilityPolicy $availability,
-        array $packages
+        array $packages,
+        ?PackageSourcePolicy $sourcePolicy = null
     ) {
         $this->exposure = $exposure;
         $this->profile = $profile;
         $this->oauthServer = $oauthServer;
         $this->availability = $availability;
+        $this->sourcePolicy = $sourcePolicy ?? new PackageSourcePolicy();
         $this->packages = array_values($packages);
     }
 
@@ -107,6 +111,22 @@ final class AdminPage
             : array('error' => 'oauth'));
     }
 
+    public function saveSourcePolicy(): void
+    {
+        if (!$this->canManage() || (function_exists('is_multisite') && is_multisite())) {
+            return;
+        }
+        if (function_exists('check_admin_referer')) {
+            check_admin_referer('codi_mcp_save_source_policy');
+        }
+        $managed = isset($_POST['managed_sources']) && is_array($_POST['managed_sources'])
+            ? array_values(array_filter(array_map('sanitize_text_field', wp_unslash($_POST['managed_sources'])), 'is_string'))
+            : array();
+        $this->redirect($this->sourcePolicy->saveManaged($managed)
+            ? array('updated' => 'sources')
+            : array('error' => 'sources'));
+    }
+
     public function render(): void
     {
         if (!$this->canManage()) {
@@ -130,6 +150,8 @@ final class AdminPage
             echo '<div class="notice notice-error"><p>Site package availability could not be saved. No persisted change was confirmed.</p></div>';
         } elseif (($_GET['error'] ?? '') === 'oauth') {
             echo '<div class="notice notice-error"><p>The OAuth client could not be disconnected.</p></div>';
+        } elseif (($_GET['error'] ?? '') === 'sources') {
+            echo '<div class="notice notice-error"><p>Managed source policy could not be saved.</p></div>';
         }
         if (($_GET['updated'] ?? '') === 'exposure') {
             echo '<div class="notice notice-success is-dismissible"><p>Ability exposure updated. Reconnect or rescan the MCP client to refresh its tool catalogue.</p></div>';
@@ -137,6 +159,8 @@ final class AdminPage
             echo '<div class="notice notice-success is-dismissible"><p>Site package availability updated.</p></div>';
         } elseif (($_GET['updated'] ?? '') === 'oauth') {
             echo '<div class="notice notice-success is-dismissible"><p>OAuth client disconnected and its active credentials revoked.</p></div>';
+        } elseif (($_GET['updated'] ?? '') === 'sources') {
+            echo '<div class="notice notice-success is-dismissible"><p>Managed source policy updated.</p></div>';
         }
 
         echo '<p>Codi MCP registers a dedicated site-local server through the official WordPress MCP Adapter. Package availability and ability exposure are separate controls.</p>';
@@ -152,6 +176,10 @@ final class AdminPage
         echo '</tbody></table>';
 
         $this->renderOAuthClients();
+
+        if (!function_exists('is_multisite') || !is_multisite()) {
+            $this->renderSourcePolicy();
+        }
 
         $this->renderDelegatedPackages();
 
@@ -273,6 +301,65 @@ final class AdminPage
             echo '<button type="submit" class="button">Disconnect</button></form></td></tr>';
         }
         echo '</tbody></table>';
+    }
+
+    private function renderSourcePolicy(): void
+    {
+        echo '<h2>Source management</h2>';
+        echo '<p>Managed packages may be replaced with custom source or deleted by Codi. Codi MCP is protected, and the codi-mcp-custom companion is intrinsically managed. Other packages require explicit source-management approval. External packages remain inspectable and may use WordPress-advertised native updates. Code recovery does not restore database state.</p>';
+        echo '<form method="post" action="' . $this->escape($this->adminPostUrl()) . '"><input type="hidden" name="action" value="codi_mcp_save_source_policy">';
+        if (function_exists('wp_nonce_field')) {
+            wp_nonce_field('codi_mcp_save_source_policy');
+        }
+        echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th style="width:90px">Managed</th><th>Package</th><th>Policy</th></tr></thead><tbody>';
+        foreach ($this->sourceRows() as $row) {
+            $fixed = (bool) ($row['fixed'] ?? false);
+            echo '<tr><td>';
+            if ($fixed) {
+                echo '—';
+            } else {
+                echo '<input type="checkbox" name="managed_sources[]" value="' . $this->escapeAttr($row['key']) . '"' . ($row['policy'] === PackageSourcePolicy::MANAGED ? ' checked' : '') . '>';
+            }
+            echo '</td><td><strong>' . $this->escape($row['name']) . '</strong><br><code>' . $this->escape($row['key']) . '</code></td><td>' . $this->escape($row['policy']) . '</td></tr>';
+        }
+        echo '</tbody></table>';
+        if (function_exists('submit_button')) {
+            submit_button('Save source management', 'secondary');
+        } else {
+            echo '<p><button type="submit">Save source management</button></p>';
+        }
+        echo '</form>';
+    }
+
+    /** @return array<int,array{key:string,name:string,policy:string}> */
+    private function sourceRows(): array
+    {
+        $rows = array();
+        if (!function_exists('get_plugins') && defined('ABSPATH') && is_file(ABSPATH . 'wp-admin/includes/plugin.php')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (function_exists('get_plugins')) {
+            foreach ((array) get_plugins() as $file => $data) {
+                $slug = dirname((string) $file);
+                if ($slug === '.' || str_contains($slug, '/')) {
+                    continue;
+                }
+                $key = $this->sourcePolicy->key('plugin', $slug);
+                $rows[] = array('key' => $key, 'name' => (string) ($data['Name'] ?? $slug), 'policy' => $this->sourcePolicy->state('plugin', $slug), 'fixed' => $this->sourcePolicy->isFixed('plugin', $slug));
+            }
+        }
+        if (function_exists('wp_get_themes')) {
+            foreach ((array) wp_get_themes(array('errors' => null, 'allowed' => null)) as $stylesheet => $theme) {
+                if (!is_object($theme)) {
+                    continue;
+                }
+                $key = $this->sourcePolicy->key('theme', (string) $stylesheet);
+                $name = method_exists($theme, 'get') ? (string) $theme->get('Name') : (string) $stylesheet;
+                $rows[] = array('key' => $key, 'name' => $name, 'policy' => $this->sourcePolicy->state('theme', (string) $stylesheet), 'fixed' => $this->sourcePolicy->isFixed('theme', (string) $stylesheet));
+            }
+        }
+        usort($rows, static fn (array $a, array $b): int => strnatcasecmp($a['key'], $b['key']));
+        return $rows;
     }
 
     /** @return AbilityPackage[] */

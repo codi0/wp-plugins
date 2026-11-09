@@ -6,11 +6,60 @@ namespace CodiMcp\Packages\Diagnostics;
 
 final class DiagnosticRunner
 {
-    private DiagnosticStore $store;
+    private const PROFILES = array(
+        'none' => array(),
+        'admin' => array(
+            'plugins_loaded',
+            'init',
+            'wp_loaded',
+            'admin_init',
+            'admin_menu',
+            'current_screen',
+            'admin_enqueue_scripts',
+            'admin_notices',
+            'all_admin_notices',
+            'admin_print_styles',
+            'admin_print_scripts',
+            'admin_bar_menu',
+            'wp_before_admin_bar_render',
+            'shutdown',
+        ),
+        'frontend' => array(
+            'plugins_loaded',
+            'init',
+            'wp_loaded',
+            'wp',
+            'template_redirect',
+            'wp_enqueue_scripts',
+            'wp_head',
+            'wp_footer',
+            'shutdown',
+        ),
+        'rest' => array(
+            'plugins_loaded',
+            'init',
+            'rest_api_init',
+            'rest_request_before_callbacks',
+            'rest_request_after_callbacks',
+            'shutdown',
+        ),
+        'cron' => array(
+            'plugins_loaded',
+            'init',
+            'wp_loaded',
+            'shutdown',
+        ),
+    );
 
-    public function __construct(?DiagnosticStore $store = null)
+    private DiagnosticStore $store;
+    private DiagnosticView $view;
+    private DiagnosticComparator $comparator;
+
+    public function __construct(?DiagnosticStore $store = null, ?DiagnosticView $view = null, ?DiagnosticComparator $comparator = null)
     {
         $this->store = $store ?? new DiagnosticStore();
+        $this->view = $view ?? new DiagnosticView();
+        $this->comparator = $comparator ?? new DiagnosticComparator($this->store);
     }
 
     public function run(array $input = array())
@@ -21,6 +70,13 @@ final class DiagnosticRunner
         }
 
         $config = $this->config($input);
+        if ($config instanceof \WP_Error) {
+            return $config;
+        }
+        $cacheProbes = $this->prepareCacheProbes();
+        if ($cacheProbes !== array()) {
+            $config['cache_probes'] = $cacheProbes;
+        }
         $userId = $this->authorizingUserId();
         $effectiveUserId = $this->effectiveUserId($input, $userId);
         if ($effectiveUserId instanceof \WP_Error) {
@@ -31,15 +87,29 @@ final class DiagnosticRunner
             return $issued;
         }
 
-        $response = wp_remote_get((string) $target['url'], array(
-            'timeout' => 15,
-            'redirection' => 0,
-            'limit_response_size' => 65536,
-            'headers' => array(
-                'X-Codi-Diagnostic-Token' => $issued['token'],
-                'Cache-Control' => 'no-cache',
-            ),
-        ));
+        try {
+            $response = wp_remote_get((string) $target['url'], array(
+                'timeout' => 15,
+                'redirection' => 0,
+                'limit_response_size' => 65536,
+                'headers' => array(
+                    'X-Codi-Diagnostic-Token' => $issued['token'],
+                    'Cache-Control' => 'no-cache',
+                ),
+            ));
+        } finally {
+            if (function_exists('wp_cache_delete')) {
+                foreach ($cacheProbes as $probe) {
+                    if (!is_array($probe) || empty($probe['prepared'])) {
+                        continue;
+                    }
+                    try {
+                        wp_cache_delete((string) ($probe['key'] ?? ''), (string) ($probe['group'] ?? ''));
+                    } catch (\Throwable) {
+                    }
+                }
+            }
+        }
 
         $capture = $this->store->get($issued['diagnostic_id']);
         if ($capture === false) {
@@ -64,10 +134,14 @@ final class DiagnosticRunner
             return new \WP_Error('codi_mcp_diagnostic_method_invalid', 'method must be GET, POST, PUT, PATCH, or DELETE.');
         }
 
+        $config = $this->config($input);
+        if ($config instanceof \WP_Error) {
+            return $config;
+        }
         $issued = $this->store->issue(
             $this->authorizingUserId(),
             (string) $target['request_uri'],
-            $this->config($input),
+            $config,
             null,
             $method,
             'request'
@@ -96,11 +170,16 @@ final class DiagnosticRunner
         if ($capture === false) {
             return new \WP_Error('codi_mcp_diagnostic_not_found', 'The diagnostic capture was not found or has expired.');
         }
-        if (!array_key_exists($section, $capture) || !is_array($capture[$section])) {
-            return new \WP_Error('codi_mcp_diagnostic_section_unavailable', 'The requested diagnostic section is unavailable.');
+        $data = $this->view->render($capture, $section, $input);
+        if ($data instanceof \WP_Error) {
+            return $data;
         }
+        return array('section' => $section, 'data' => $data);
+    }
 
-        return array('section' => $section, 'data' => $capture[$section]);
+    public function compare(array $input = array())
+    {
+        return $this->comparator->compare($input);
     }
 
     private function summary(string $diagnosticId, array $capture): array
@@ -129,22 +208,81 @@ final class DiagnosticRunner
                 'redirects' => (int) ($summary['redirects'] ?? 0),
                 'security_failures' => (int) ($summary['security_failures'] ?? 0),
                 'assets' => (int) ($summary['assets'] ?? 0),
+                'correlations' => (int) ($summary['correlations'] ?? 0),
             ),
             'available_sections' => array_values(array_filter(array_keys($capture), static fn (string $key): bool => $key !== 'overview')),
         );
     }
 
-    private function config(array $input): array
+    private function config(array $input): array|\WP_Error
     {
-        return array(
+        $profile = strtolower(trim((string) ($input['profile'] ?? 'none')));
+        if (!array_key_exists($profile, self::PROFILES)) {
+            return new \WP_Error('codi_mcp_diagnostic_profile_invalid', 'profile must be none, admin, frontend, rest, or cron.');
+        }
+        $config = array(
+            'profile' => $profile,
             'include_assets' => !array_key_exists('include_assets', $input) || (bool) $input['include_assets'],
             'hooks' => array_values(array_filter(
-                $this->names((array) ($input['hooks'] ?? array()), 20),
+                $this->names(array_merge(self::PROFILES[$profile], (array) ($input['hooks'] ?? array())), 20),
                 static fn (string $hook): bool => strtolower($hook) !== 'all'
             )),
             'capabilities' => $this->names((array) ($input['capabilities'] ?? array()), 20),
             'explain_slow_queries' => (bool) ($input['explain_slow_queries'] ?? false),
+            'callback_timing' => (bool) ($input['callback_timing'] ?? false),
         );
+        $config['configuration_fingerprint'] = $this->configurationFingerprint($config);
+        return $config;
+    }
+
+    private function configurationFingerprint(array $config): string
+    {
+        $hooks = array_values(array_unique(array_map('strval', (array) ($config['hooks'] ?? array()))));
+        $capabilities = array_values(array_unique(array_map('strval', (array) ($config['capabilities'] ?? array()))));
+        sort($hooks, SORT_STRING);
+        sort($capabilities, SORT_STRING);
+        $normalized = array(
+            'profile' => (string) ($config['profile'] ?? 'none'),
+            'include_assets' => (bool) ($config['include_assets'] ?? true),
+            'hooks' => $hooks,
+            'capabilities' => $capabilities,
+            'explain_slow_queries' => (bool) ($config['explain_slow_queries'] ?? false),
+            'callback_timing' => (bool) ($config['callback_timing'] ?? false),
+        );
+        return hash('sha256', (string) json_encode($normalized, JSON_UNESCAPED_SLASHES));
+    }
+
+    /** @return array<string,array<string,mixed>> */
+    private function prepareCacheProbes(): array
+    {
+        if (!function_exists('wp_cache_set')) {
+            return array();
+        }
+
+        $probes = array();
+        foreach (array(
+            'diagnostic' => 'codi_mcp_diagnostics',
+            'core_options' => 'options',
+        ) as $name => $group) {
+            $probe = array(
+                'group' => $group,
+                'prepared' => false,
+                'key' => '',
+                'value_hash' => '',
+            );
+            try {
+                $key = 'codi_probe_' . bin2hex(random_bytes(12));
+                $value = bin2hex(random_bytes(24));
+                $probe['key'] = $key;
+                $probe['value_hash'] = hash('sha256', $value);
+                $probe['prepared'] = (bool) wp_cache_set($key, $value, $group, 60);
+            } catch (\Throwable) {
+                $probe['prepared'] = false;
+            }
+            $probes[$name] = $probe;
+        }
+
+        return $probes;
     }
 
     private function authorizingUserId(): int

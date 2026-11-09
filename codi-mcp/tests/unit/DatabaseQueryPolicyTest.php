@@ -60,11 +60,10 @@ final class DatabaseQueryPolicyTest extends TestCase
         }
     }
 
-    public function test_table_scope_is_current_site_and_shared_only(): void
+    public function test_table_scope_accepts_any_existing_current_database_table(): void
     {
         $policy = new QueryPolicy();
         $tables = array('wp_posts', 'wp_options', 'wp_users', 'wp_2_posts', 'custom_table');
-        $shared = array('wp_users' => true);
 
         $validation = $policy->validate('SELECT * FROM %i', array('wp_posts'));
         $this->assertFalse(is_wp_error($validation));
@@ -72,10 +71,7 @@ final class DatabaseQueryPolicyTest extends TestCase
             $validation['sql'],
             array('wp_posts'),
             $validation['placeholder_types'],
-            $tables,
-            $shared,
-            'wp_',
-            'wp_'
+            $tables
         ));
 
         $sharedValidation = $policy->validate('SELECT * FROM %i', array('wp_users'));
@@ -84,10 +80,7 @@ final class DatabaseQueryPolicyTest extends TestCase
             $sharedValidation['sql'],
             array('wp_users'),
             $sharedValidation['placeholder_types'],
-            $tables,
-            $shared,
-            'wp_',
-            'wp_'
+            $tables
         ));
 
         $rawTable = $policy->validate('SELECT * FROM wp_posts', array());
@@ -96,10 +89,7 @@ final class DatabaseQueryPolicyTest extends TestCase
             $rawTable['sql'],
             array(),
             $rawTable['placeholder_types'],
-            $tables,
-            $shared,
-            'wp_',
-            'wp_'
+            $tables
         );
         $this->assertTrue(is_wp_error($rawScope));
         $this->assertSame('codi_mcp_db_query_table_parameter', $rawScope->code);
@@ -110,29 +100,32 @@ final class DatabaseQueryPolicyTest extends TestCase
             $commaJoin['sql'],
             array('wp_posts', 'wp_options'),
             $commaJoin['placeholder_types'],
-            $tables,
-            $shared,
-            'wp_',
-            'wp_'
+            $tables
         );
         $this->assertTrue(is_wp_error($commaScope));
         $this->assertSame('codi_mcp_db_query_comma_join', $commaScope->code);
 
         foreach (array('wp_2_posts', 'custom_table') as $table) {
-            $blockedValidation = $policy->validate('SELECT * FROM %i', array($table));
-            $this->assertFalse(is_wp_error($blockedValidation));
-            $scope = $policy->validateTableScope(
-                $blockedValidation['sql'],
+            $existingValidation = $policy->validate('SELECT * FROM %i', array($table));
+            $this->assertFalse(is_wp_error($existingValidation));
+            $this->assertTrue(true === $policy->validateTableScope(
+                $existingValidation['sql'],
                 array($table),
-                $blockedValidation['placeholder_types'],
-                $tables,
-                $shared,
-                'wp_',
-                'wp_'
-            );
-            $this->assertTrue(is_wp_error($scope), $table . ' should be outside query scope.');
-            $this->assertSame('codi_mcp_db_query_table_scope', $scope->code);
+                $existingValidation['placeholder_types'],
+                $tables
+            ), $table . ' should be readable because it exists in the current WordPress database.');
         }
+
+        $missingValidation = $policy->validate('SELECT * FROM %i', array('missing_table'));
+        $this->assertFalse(is_wp_error($missingValidation));
+        $missingScope = $policy->validateTableScope(
+            $missingValidation['sql'],
+            array('missing_table'),
+            $missingValidation['placeholder_types'],
+            $tables
+        );
+        $this->assertTrue(is_wp_error($missingScope));
+        $this->assertSame('codi_mcp_db_query_table_not_found', $missingScope->code);
     }
 
     public function test_ast_validates_nested_table_sources_and_rejects_raw_nested_tables(): void
@@ -146,15 +139,12 @@ final class DatabaseQueryPolicyTest extends TestCase
             $nested['sql'],
             array('wp_posts', 10),
             $nested['placeholder_types'],
-            $tables,
-            array(),
-            'wp_',
-            'wp_'
+            $tables
         ));
 
         $rawNested = $policy->validate('SELECT ID FROM (SELECT ID FROM wp_posts) p', array());
         $this->assertFalse(is_wp_error($rawNested));
-        $scope = $policy->validateTableScope($rawNested['sql'], array(), $rawNested['placeholder_types'], $tables, array(), 'wp_', 'wp_');
+        $scope = $policy->validateTableScope($rawNested['sql'], array(), $rawNested['placeholder_types'], $tables);
         $this->assertTrue(is_wp_error($scope));
         $this->assertSame('codi_mcp_db_query_table_parameter', $scope->code);
 

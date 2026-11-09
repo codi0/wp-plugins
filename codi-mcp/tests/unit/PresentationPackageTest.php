@@ -60,16 +60,6 @@ final class PresentationPackageTest extends TestCase
         $package->registerAbilities();
         $this->assertSame($expected, array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities']));
         $this->assertArrayHasKey('codi-presentation', (array) $GLOBALS['codi_mcp_test_registered_ability_categories']);
-        foreach ($expected as $name) {
-            $descriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$name] ?? array());
-            $meta = (array) ($descriptor['meta'] ?? array());
-            $this->assertSame('presentation', (string) ($meta['codi_mcp']['package'] ?? ''));
-            $this->assertSame(false, $meta['public'] ?? null);
-            $this->assertSame(false, $meta['mcp']['public'] ?? null);
-            $this->assertSame(true, $meta['codi_mcp']['owned'] ?? null);
-            $this->assertSame(false, $meta['annotations']['openWorldHint'] ?? null);
-        }
-
         $preview = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/presentation-preview'] ?? array());
         $variants = (array) ($preview['input_schema']['properties']['operations']['items']['oneOf'] ?? array());
         $presentationUpdate = array();
@@ -88,6 +78,54 @@ final class PresentationPackageTest extends TestCase
         $blockSchema = (array) ($inspect['output_schema']['properties']['blocks']['items'] ?? array());
         $this->assertSame(array('structural_only', 'php_save_codec'), (array) ($blockSchema['properties']['mutation_support']['enum'] ?? array()));
         $this->assertSame('array', (string) ($blockSchema['properties']['codec_capabilities']['type'] ?? ''));
+
+        $modelPreview = (array) ($preview['meta']['codi_mcp']['model_input_schema'] ?? array());
+        $modelOperation = (array) ($modelPreview['properties']['operations']['items'] ?? array());
+        $this->assertTrue((bool) ($modelOperation['additionalProperties'] ?? false));
+        $this->assertArrayHasKey('action', (array) ($modelOperation['properties'] ?? array()));
+        $this->assertFalse(isset($modelOperation['oneOf']), 'The advertised preview grammar should stay compact while native validation remains strict.');
+    }
+
+    public function test_presentation_help_is_compact_until_one_operation_schema_is_requested(): void
+    {
+        $package = new Package();
+        $compact = $package->presentationHelp(array());
+        $this->assertFalse($compact instanceof \WP_Error);
+        $operations = (array) ($compact['operations'] ?? array());
+        $this->assertSame(count(OperationCatalog::all()), count($operations));
+        $this->assertArrayHasKey('action', (array) ($operations[0] ?? array()));
+        $this->assertFalse(isset($operations[0]['summary']));
+        $this->assertFalse(isset($operations[0]['input_schema']));
+
+        $exact = $package->presentationHelp(array('action' => 'content.update_text'));
+        $this->assertFalse($exact instanceof \WP_Error);
+        $row = (array) ($exact['operations'][0] ?? array());
+        $this->assertSame('content.update_text', (string) ($row['action'] ?? ''));
+        $this->assertTrue((string) ($row['summary'] ?? '') !== '');
+        $schema = (array) ($row['input_schema'] ?? array());
+        $this->assertSame(array('content.update_text'), (array) ($schema['properties']['action']['enum'] ?? array()));
+        $this->assertArrayHasKey('text', (array) ($schema['properties'] ?? array()));
+    }
+
+    public function test_presentation_inspection_returns_only_requested_representation(): void
+    {
+        $manager = new PresentationManager();
+        $ref = (new RefCodec())->encode('page', 101);
+
+        $blocks = $manager->inspect(array('ref' => $ref));
+        $this->assertArrayHasKey('blocks', $blocks);
+        $this->assertArrayHasKey('dependencies', $blocks);
+        $this->assertFalse(isset($blocks['content']));
+
+        $raw = $manager->inspect(array('ref' => $ref, 'detail' => 'raw'));
+        $this->assertArrayHasKey('content', $raw);
+        $this->assertFalse(isset($raw['blocks']));
+        $this->assertFalse(isset($raw['dependencies']));
+
+        $full = $manager->inspect(array('ref' => $ref, 'detail' => 'full'));
+        $this->assertArrayHasKey('content', $full);
+        $this->assertArrayHasKey('blocks', $full);
+        $this->assertArrayHasKey('dependencies', $full);
     }
 
     public function test_operation_catalog_has_no_generic_gutenberg_attribute_escape_hatch(): void

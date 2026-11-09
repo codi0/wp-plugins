@@ -93,4 +93,28 @@ final class ArtifactTransferTest extends TestCase
         $this->assertTrue(is_wp_error($result));
         $this->assertSame('codi_mcp_export_source_too_large', $result->code);
     }
+
+    public function test_native_zip_writer_preserves_empty_source_directories(): void
+    {
+        if (!class_exists('ZipArchive')) {
+            $this->assertTrue(true);
+            return;
+        }
+        $source = $this->root . DIRECTORY_SEPARATOR . 'source-with-empty-dir';
+        @mkdir($source . DIRECTORY_SEPARATOR . 'empty' . DIRECTORY_SEPARATOR . 'nested', 0777, true);
+        file_put_contents($source . DIRECTORY_SEPARATOR . 'index.php', '<?php');
+        $store = new ArtifactDownloadStore(4096, 16, $this->root . DIRECTORY_SEPARATOR . 'empty-dir-downloads', 3600, 10, 1024);
+        $staged = $store->stageDirectory('plugins.export', $source, 'demo-plugin', 'demo-plugin.zip');
+        $this->assertFalse($staged instanceof \WP_Error);
+        $download = $store->get((string) $staged['download_id'], 'plugins.export');
+        $this->assertFalse($download instanceof \WP_Error);
+
+        $zip = new \ZipArchive();
+        $this->assertSame(true, $zip->open((string) $download['path'], \ZipArchive::RDONLY));
+        try {
+            $this->assertFalse($zip->locateName('demo-plugin/empty/nested/', \ZipArchive::FL_NOCASE) === false);
+        } finally {
+            $zip->close();
+        }
+    }
 }

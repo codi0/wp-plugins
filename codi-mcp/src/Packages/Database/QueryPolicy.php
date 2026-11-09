@@ -110,9 +110,8 @@ final class QueryPolicy
      * @param array<int,mixed> $params
      * @param array<int,string> $placeholderTypes
      * @param array<int,string> $tableNames
-     * @param array<string,bool> $sharedTables
      */
-    public function validateTableScope(string $sql, array $params, array $placeholderTypes, array $tableNames, array $sharedTables, string $prefix, string $basePrefix)
+    public function validateTableScope(string $sql, array $params, array $placeholderTypes, array $tableNames)
     {
         if ($this->hasImplicitCommaJoin($sql)) {
             return $this->error('codi_mcp_db_query_comma_join', 'Implicit comma joins are not supported; use explicit JOIN clauses.');
@@ -129,10 +128,6 @@ final class QueryPolicy
             $table = (string) ($params[$paramIndex] ?? '');
             if (!in_array($table, $tableNames, true)) {
                 return $this->error('codi_mcp_db_query_table_not_found', 'A table identifier parameter does not name an existing table in the current WordPress database.');
-            }
-            $relationship = $this->relationship($table, $sharedTables, $prefix, $basePrefix);
-            if ($relationship !== 'site' && $relationship !== 'shared') {
-                return $this->error('codi_mcp_db_query_table_scope', 'A table identifier parameter references a table outside the current site/shared WordPress scope.');
             }
         }
 
@@ -343,24 +338,6 @@ final class QueryPolicy
     private function maskBackticks(string $sql): string
     {
         return preg_replace('/`[^`]*`/', ' IDENT ', $sql) ?? $sql;
-    }
-
-    /** @param array<string,bool> $sharedTables */
-    private function relationship(string $table, array $sharedTables, string $prefix, string $basePrefix): string
-    {
-        if (isset($sharedTables[$table])) {
-            return 'shared';
-        }
-        if ($prefix === $basePrefix && $basePrefix !== '' && preg_match('/^' . preg_quote($basePrefix, '/') . '[1-9][0-9]*_/', $table)) {
-            return 'wordpress-other';
-        }
-        if ($prefix !== '' && strpos($table, $prefix) === 0) {
-            return 'site';
-        }
-        if ($basePrefix !== '' && strpos($table, $basePrefix) === 0) {
-            return 'wordpress-other';
-        }
-        return 'other';
     }
 
     private function isSensitiveColumn(string $column): bool

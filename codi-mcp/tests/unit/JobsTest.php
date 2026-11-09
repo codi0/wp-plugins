@@ -243,29 +243,28 @@ namespace CodiMcpTest\Unit {
             do_action('action_scheduler_init');
         }
 
-        public function test_package_registers_only_existing_job_operations(): void
+        public function test_package_always_registers_only_readonly_jobs(): void
         {
             $package = new Package();
-            $this->assertSame(
-                array('codi/jobs-list', 'codi/job-inspect', 'codi/job-run', 'codi/job-cancel'),
-                $package->abilityNames()
-            );
+            $expected = array('codi/jobs-list', 'codi/job-inspect');
+            $this->assertSame($expected, $package->abilityNames());
+            $this->assertSame($expected, $package->managedExposureAbilityNames());
+
             $package->registerCategories();
             $package->registerAbilities();
+            $this->assertSame($expected, array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities']));
 
-            $this->assertSame(
-                array('codi/jobs-list', 'codi/job-inspect', 'codi/job-run', 'codi/job-cancel'),
-                array_keys((array) $GLOBALS['codi_mcp_test_registered_abilities'])
-            );
-
-            $list = $GLOBALS['codi_mcp_test_registered_abilities']['codi/jobs-list'];
-            $run = $GLOBALS['codi_mcp_test_registered_abilities']['codi/job-run'];
-            $cancel = $GLOBALS['codi_mcp_test_registered_abilities']['codi/job-cancel'];
-            $this->assertTrue((bool) $list['meta']['annotations']['readonly']);
-            $this->assertTrue((bool) $run['meta']['annotations']['destructive']);
-            $this->assertFalse((bool) $run['meta']['annotations']['idempotent']);
-            $this->assertTrue((bool) $run['meta']['annotations']['openWorldHint']);
-            $this->assertTrue((bool) $cancel['meta']['annotations']['idempotent']);
+            foreach ($expected as $name) {
+                $descriptor = (array) $GLOBALS['codi_mcp_test_registered_abilities'][$name];
+                $this->assertTrue((bool) ($descriptor['meta']['annotations']['readonly'] ?? false));
+                $this->assertFalse((bool) ($descriptor['meta']['annotations']['destructive'] ?? true));
+                $this->assertTrue((bool) ($descriptor['meta']['annotations']['idempotent'] ?? false));
+            }
+            $this->assertFalse(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/job-run']));
+            $this->assertFalse(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/job-cancel']));
+            $backend = new ActionSchedulerBackend();
+            $this->assertFalse(method_exists($backend, 'run'));
+            $this->assertFalse(method_exists($backend, 'cancel'));
         }
 
         public function test_jobs_require_super_admin_on_multisite(): void
@@ -299,35 +298,6 @@ namespace CodiMcpTest\Unit {
             $this->assertFalse(str_contains((string) $detail['args_json'], 'secret-token'));
             $this->assertTrue(count((array) $detail['callbacks']) >= 1);
             $this->assertFalse(str_contains((string) $detail['logs'][0]['message'], 'log-secret'));
-        }
-
-        public function test_run_and_cancel_require_exact_unclaimed_pending_jobs(): void
-        {
-            $backend = new ActionSchedulerBackend();
-
-            $run = $backend->run(array('id' => 1));
-            $this->assertFalse($run instanceof \WP_Error);
-            $this->assertSame('complete', (string) $run['status']);
-
-            $failed = $backend->run(array('id' => 2));
-            $this->assertTrue($failed instanceof \WP_Error);
-            $this->assertSame('codi_mcp_job_not_pending', $failed->get_error_code());
-
-            $claimedRun = $backend->run(array('id' => 4));
-            $this->assertTrue($claimedRun instanceof \WP_Error);
-            $this->assertSame('codi_mcp_job_claimed', $claimedRun->get_error_code());
-
-            $cancel = $backend->cancel(array('id' => 3));
-            $this->assertFalse($cancel instanceof \WP_Error);
-            $this->assertSame('canceled', (string) $cancel['status']);
-
-            $cancelAgain = $backend->cancel(array('id' => 3));
-            $this->assertFalse($cancelAgain instanceof \WP_Error);
-            $this->assertSame('canceled', (string) $cancelAgain['status']);
-
-            $claimedCancel = $backend->cancel(array('id' => 4));
-            $this->assertTrue($claimedCancel instanceof \WP_Error);
-            $this->assertSame('codi_mcp_job_claimed', $claimedCancel->get_error_code());
         }
     }
 }

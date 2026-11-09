@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace CodiMcp\Packages\System;
 
 use CodiMcp\Audit\AuditLog;
+use CodiMcp\Core\Execution\OutputCapture;
 use CodiMcp\Core\Security\SensitiveDataRedactor;
 
 final class SystemInspector
@@ -89,7 +90,7 @@ final class SystemInspector
         $namespaceFilter = trim((string) ($input['namespace'] ?? ''));
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $namespaces = method_exists($server, 'get_namespaces') ? array_values(array_map('strval', (array) $server->get_namespaces())) : array();
         usort($namespaces, static fn (string $left, string $right): int => strlen($right) <=> strlen($left));
 
@@ -142,7 +143,7 @@ final class SystemInspector
         $hookFilter = trim((string) ($input['hook'] ?? ''));
         $includeArgs = !empty($input['include_args']);
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $cron = function_exists('_get_cron_array') ? (array) _get_cron_array() : array();
 
         $hookCounts = array();
@@ -191,7 +192,7 @@ final class SystemInspector
     {
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $rules = get_option('rewrite_rules', array());
         $rules = is_array($rules) ? $rules : array();
 
@@ -218,37 +219,50 @@ final class SystemInspector
         }
 
         $search = strtolower(trim((string) ($input['search'] ?? '')));
-        $includeGood = !array_key_exists('include_good', $input) || !empty($input['include_good']);
+        $includeGood = !empty($input['include_good']);
         $includeAsync = !empty($input['include_async']);
+        $includeThirdParty = !empty($input['include_third_party']);
         $instance = \WP_Site_Health::get_instance();
         $tests = \WP_Site_Health::get_tests();
         $direct = is_array($tests['direct'] ?? null) ? $tests['direct'] : array();
         $async = is_array($tests['async'] ?? null) ? $tests['async'] : array();
         $groups = array('critical' => array(), 'recommended' => array(), 'good' => array(), 'informational' => array());
+        $unexpectedOutput = array();
+        $thirdPartyRun = 0;
+        $thirdPartyOmitted = 0;
 
-        $runTest = function (string $testId, array $definition, $callback) use (&$groups, $instance, $search, $includeGood): bool {
+        $matchesSearch = static function (string $testId, array $definition) use ($search): bool {
             $label = wp_strip_all_tags((string) ($definition['label'] ?? $testId));
-            if ($search !== '' && strpos(strtolower($testId . ' ' . $label), $search) === false) {
-                return false;
-            }
-            if (is_string($callback)) {
-                $method = 'get_test_' . $callback;
-                $callback = method_exists($instance, $method) ? array($instance, $method) : null;
-            }
+            return $search === '' || strpos(strtolower($testId . ' ' . $label), $search) !== false;
+        };
+
+        $runTest = function (string $testId, array $definition, $callback) use (&$groups, &$unexpectedOutput, $includeGood): bool {
+            $label = wp_strip_all_tags((string) ($definition['label'] ?? $testId));
             if (!is_callable($callback)) {
                 return false;
             }
 
+            $output = null;
             try {
-                $result = call_user_func($callback);
-                if (!is_wp_error($result) && function_exists('apply_filters')) {
-                    $result = apply_filters('site_status_test_result', $result);
-                }
+                $result = OutputCapture::run(static function () use ($callback) {
+                    $result = call_user_func($callback);
+                    if (!is_wp_error($result) && function_exists('apply_filters')) {
+                        $result = apply_filters('site_status_test_result', $result);
+                    }
+                    return $result;
+                }, $output);
             } catch (\Throwable $throwable) {
                 $result = array(
                     'status' => 'informational',
                     'label' => $label,
                     'description' => 'Site Health test failed to execute: ' . $throwable->getMessage(),
+                );
+            }
+            if (is_array($output) && !empty($output['supported']) && (int) ($output['bytes'] ?? 0) > 0) {
+                $unexpectedOutput[] = array(
+                    'test' => $testId,
+                    'bytes' => (int) $output['bytes'],
+                    'sha256' => (string) ($output['sha256'] ?? ''),
                 );
             }
             if (is_wp_error($result)) {
@@ -281,25 +295,54 @@ final class SystemInspector
 
         foreach ($direct as $testId => $definition) {
             $definition = is_array($definition) ? $definition : array();
-            $runTest((string) $testId, $definition, $definition['test'] ?? null);
+            $testId = (string) $testId;
+            if (!$matchesSearch($testId, $definition)) {
+                continue;
+            }
+            $callback = SiteHealthTestScope::resolve($definition['test'] ?? null, $instance);
+            if (!is_callable($callback)) {
+                continue;
+            }
+            $core = SiteHealthTestScope::isCore($callback, $instance);
+            if (!$core && !$includeThirdParty) {
+                ++$thirdPartyOmitted;
+                continue;
+            }
+            if ($runTest($testId, $definition, $callback) && !$core) {
+                ++$thirdPartyRun;
+            }
         }
 
         $asyncRun = 0;
         $asyncOmitted = 0;
-        if ($includeAsync) {
-            foreach ($async as $testId => $definition) {
-                $definition = is_array($definition) ? $definition : array();
-                $callback = $definition['async_direct_test'] ?? null;
-                if (!is_callable($callback)) {
+        foreach ($async as $testId => $definition) {
+            $definition = is_array($definition) ? $definition : array();
+            $testId = (string) $testId;
+            if (!$matchesSearch($testId, $definition)) {
+                continue;
+            }
+            $callback = SiteHealthTestScope::resolve($definition['async_direct_test'] ?? null, $instance);
+            if (!is_callable($callback)) {
+                if ($includeAsync) {
                     ++$asyncOmitted;
-                    continue;
                 }
-                if ($runTest((string) $testId, $definition, $callback)) {
-                    ++$asyncRun;
+                continue;
+            }
+            $core = SiteHealthTestScope::isCore($callback, $instance);
+            if (!$core && !$includeThirdParty) {
+                ++$thirdPartyOmitted;
+                continue;
+            }
+            if (!$includeAsync) {
+                ++$asyncOmitted;
+                continue;
+            }
+            if ($runTest($testId, $definition, $callback)) {
+                ++$asyncRun;
+                if (!$core) {
+                    ++$thirdPartyRun;
                 }
             }
-        } else {
-            $asyncOmitted = count($async);
         }
 
         return array(
@@ -315,6 +358,9 @@ final class SystemInspector
             ),
             'async_tests_run' => $asyncRun,
             'async_tests_omitted' => $asyncOmitted,
+            'third_party_tests_run' => $thirdPartyRun,
+            'third_party_tests_omitted' => $thirdPartyOmitted,
+            'unexpected_output' => $unexpectedOutput,
         );
     }
 
@@ -365,8 +411,8 @@ final class SystemInspector
             return new \WP_Error('codi_mcp_debug_log_unsafe_path', 'The configured WP_DEBUG_LOG file resolves outside WP_CONTENT_DIR.');
         }
 
-        $lineLimit = min(200, max(1, (int) ($input['lines'] ?? 100)));
-        $maxBytes = min(65536, max(1024, (int) ($input['max_bytes'] ?? 32768)));
+        $lineLimit = min(200, max(1, (int) ($input['lines'] ?? 50)));
+        $maxBytes = min(65536, max(1024, (int) ($input['max_bytes'] ?? 16384)));
         $size = filesize($resolved);
         if ($size === false) {
             return new \WP_Error('codi_mcp_debug_log_read_failed', 'The configured debug log size could not be read.');
@@ -419,6 +465,7 @@ final class SystemInspector
         global $wp_object_cache;
 
         $implementation = is_object($wp_object_cache) ? get_class($wp_object_cache) : '';
+        $dropin = $this->objectCacheDropinMetadata();
         $supports = array();
         foreach (array('add_multiple', 'set_multiple', 'get_multiple', 'delete_multiple', 'flush_runtime', 'flush_group') as $feature) {
             $supports[$feature] = function_exists('wp_cache_supports') && wp_cache_supports($feature);
@@ -429,6 +476,8 @@ final class SystemInspector
             'object_cache_dropin' => defined('WP_CONTENT_DIR') && is_file(WP_CONTENT_DIR . '/object-cache.php'),
             'wp_cache_constant' => defined('WP_CACHE') && (bool) WP_CACHE,
             'implementation_class' => $implementation,
+            'dropin_name' => (string) ($dropin['name'] ?? ''),
+            'dropin_version' => (string) ($dropin['version'] ?? ''),
             'supports_add_multiple' => $supports['add_multiple'],
             'supports_set_multiple' => $supports['set_multiple'],
             'supports_get_multiple' => $supports['get_multiple'],
@@ -438,11 +487,37 @@ final class SystemInspector
         );
     }
 
+    /** @return array{name:string,version:string} */
+    private function objectCacheDropinMetadata(): array
+    {
+        if (!function_exists('get_dropins') && defined('ABSPATH')) {
+            $pluginFile = rtrim((string) ABSPATH, '/\\') . '/wp-admin/includes/plugin.php';
+            if (is_file($pluginFile)) {
+                require_once $pluginFile;
+            }
+        }
+        if (!function_exists('get_dropins')) {
+            return array('name' => '', 'version' => '');
+        }
+
+        try {
+            $dropins = (array) get_dropins();
+            $row = is_array($dropins['object-cache.php'] ?? null) ? (array) $dropins['object-cache.php'] : array();
+            return array(
+                'name' => substr((string) ($row['Name'] ?? ''), 0, 191),
+                'version' => substr((string) ($row['Version'] ?? ''), 0, 100),
+            );
+        } catch (\Throwable) {
+            return array('name' => '', 'version' => '');
+        }
+    }
+
     public function rolesList(array $input = array()): array
     {
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
+        $includeCapabilities = !empty($input['include_capabilities']);
         $rolesObject = function_exists('wp_roles') ? wp_roles() : null;
         $roles = is_object($rolesObject) && is_array($rolesObject->roles ?? null) ? $rolesObject->roles : array();
         $rows = array();
@@ -459,7 +534,11 @@ final class SystemInspector
                 }
             }
             sort($capabilities);
-            $rows[] = array('role' => (string) $slug, 'name' => $name, 'capabilities' => $capabilities);
+            $row = array('role' => (string) $slug, 'name' => $name, 'capability_count' => count($capabilities));
+            if ($includeCapabilities) {
+                $row['capabilities'] = $capabilities;
+            }
+            $rows[] = $row;
         }
         usort($rows, static fn (array $left, array $right): int => strnatcasecmp($left['role'], $right['role']));
         return $this->page($rows, $page, $perPage);
@@ -467,7 +546,7 @@ final class SystemInspector
 
     public function auditLog(array $input = array()): array
     {
-        $limit = min(200, max(1, (int) ($input['limit'] ?? 50)));
+        $limit = min(200, max(1, (int) ($input['limit'] ?? 20)));
         $all = $this->audit()->list(250);
         return array(
             'items' => array_slice($all, 0, $limit),

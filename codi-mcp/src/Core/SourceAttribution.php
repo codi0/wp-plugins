@@ -6,11 +6,15 @@ namespace CodiMcp\Core;
 
 final class SourceAttribution
 {
+    private array $contextStack = array();
     /** @return array{component_type:string,component:string,file:string,line:int,callable:string,hook:string} */
     public function fromBacktrace(?array $trace = null): array
     {
         $trace ??= debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 30);
         $fallback = null;
+        $contextEntry = $this->currentContext();
+        $context = is_array($contextEntry['source'] ?? null) ? $contextEntry['source'] : null;
+        $skipFiles = array_values(array_map('strval', (array) ($contextEntry['skip_files'] ?? array())));
 
         foreach ($trace as $frame) {
             if (!is_array($frame)) {
@@ -25,6 +29,9 @@ final class SourceAttribution
             if ($file === '') {
                 continue;
             }
+            if ($context !== null && in_array($this->normalizePath($file), $skipFiles, true)) {
+                continue;
+            }
 
             $source = $this->describeFile($file, (int) ($frame['line'] ?? 0));
             $source['callable'] = $this->frameCallable($frame);
@@ -36,7 +43,67 @@ final class SourceAttribution
             }
         }
 
+        if ($context !== null) {
+            if ((string) ($context['hook'] ?? '') === '') {
+                $context['hook'] = $this->outerHook();
+            }
+            return $context;
+        }
         return $fallback ?? $this->emptySource();
+    }
+
+    /** @param array{component_type?:mixed,component?:mixed,file?:mixed,line?:mixed,callable?:mixed,hook?:mixed} $source */
+    public function pushContext(array $source, array $skipFiles = array()): void
+    {
+        $normalizedSkipFiles = array();
+        foreach ($skipFiles as $file) {
+            $file = trim((string) $file);
+            if ($file !== '') {
+                $normalizedSkipFiles[] = $this->normalizePath($file);
+            }
+        }
+        $this->contextStack[] = array(
+            'source' => array(
+                'component_type' => substr((string) ($source['component_type'] ?? 'unknown'), 0, 50),
+                'component' => substr((string) ($source['component'] ?? ''), 0, 191),
+                'file' => substr((string) ($source['file'] ?? ''), 0, 500),
+                'line' => max(0, (int) ($source['line'] ?? 0)),
+                'callable' => substr((string) ($source['callable'] ?? ''), 0, 500),
+                'hook' => substr((string) ($source['hook'] ?? ''), 0, 191),
+            ),
+            'skip_files' => array_values(array_unique($normalizedSkipFiles)),
+        );
+    }
+
+    /** @return array{component_type:string,component:string,file:string,line:int,callable:string,hook:string}|null */
+    public function currentContextSource(): ?array
+    {
+        $entry = $this->currentContext();
+        $source = is_array($entry['source'] ?? null) ? (array) $entry['source'] : null;
+        if ($source === null) {
+            return null;
+        }
+        if ((string) ($source['hook'] ?? '') === '') {
+            $source['hook'] = $this->outerHook();
+        }
+        return $source;
+    }
+
+    public function popContext(): void
+    {
+        if ($this->contextStack !== array()) {
+            array_pop($this->contextStack);
+        }
+    }
+
+    /** @return array{source:array<string,mixed>,skip_files:array<int,string>}|null */
+    private function currentContext(): ?array
+    {
+        if ($this->contextStack === array()) {
+            return null;
+        }
+        $context = end($this->contextStack);
+        return is_array($context) ? $context : null;
     }
 
     /** @return array{component_type:string,component:string,file:string,line:int,callable:string,hook:string} */
@@ -160,6 +227,11 @@ final class SourceAttribution
         $class = (string) ($frame['class'] ?? '');
         $type = (string) ($frame['type'] ?? '');
         return substr($class . $type . $function, 0, 500);
+    }
+
+    private function normalizePath(string $file): string
+    {
+        return str_replace('\\\\', '/', $file);
     }
 
     private function inside(string $file, string $root): bool

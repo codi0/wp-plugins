@@ -293,6 +293,13 @@ final class CorePackageRuntimeTest extends TestCase
         $this->assertFalse(in_array('codi/site-only-test', $networkTools, true));
         $this->assertSame('codi', (string) ($adapter->servers['codi-mcp'][2] ?? ''));
         $this->assertSame('codi-network', (string) ($adapter->servers['codi-mcp-network'][2] ?? ''));
+        foreach (array('codi-mcp', 'codi-mcp-network') as $serverId) {
+            $description = (string) ($adapter->servers[$serverId][4] ?? '');
+            $this->assertTrue(str_contains($description, 'codi-mcp-custom'));
+            $this->assertTrue(str_contains($description, 'network-only'));
+            $this->assertTrue(str_contains($description, 'site ID'));
+            $this->assertTrue(str_contains($description, 'fail inertly'));
+        }
     }
 
     public function test_package_runtime_uses_the_site_local_exposure_policy(): void

@@ -54,7 +54,7 @@ final class DownloadCapabilityService
     {
         return [
             'type' => 'string', 'enum' => ['url', 'chunks'],
-            'description' => 'Defaults to url. Use chunks explicitly for sequential base64 data and continue with next_offset.',
+            'description' => 'Default url; chunks returns sequential base64 data with next_offset.',
         ];
     }
 

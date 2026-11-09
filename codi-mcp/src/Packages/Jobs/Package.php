@@ -6,8 +6,9 @@ namespace CodiMcp\Packages\Jobs;
 
 use CodiMcp\Core\Abilities\AbilityMetadata;
 use CodiMcp\Core\AbilityPackage;
+use CodiMcp\Core\ManagedExposurePackage;
 
-final class Package implements AbilityPackage
+final class Package implements AbilityPackage, ManagedExposurePackage
 {
     private ?ActionSchedulerBackend $backend = null;
 
@@ -23,15 +24,15 @@ final class Package implements AbilityPackage
 
     public function abilityNames(): array
     {
-        if (!$this->backend()->available()) {
-            return array();
-        }
         return array(
             $this->abilityName('jobs-list'),
             $this->abilityName('job-inspect'),
-            $this->abilityName('job-run'),
-            $this->abilityName('job-cancel'),
         );
+    }
+
+    public function managedExposureAbilityNames(): array
+    {
+        return $this->abilityNames();
     }
 
     public function registerCategories(): void
@@ -41,7 +42,7 @@ final class Package implements AbilityPackage
         }
         wp_register_ability_category($this->category(), array(
             'label' => 'Codi MCP — Jobs',
-            'description' => 'Inspect and operate existing Action Scheduler background jobs without creating arbitrary scheduled work.',
+            'description' => 'Inspect existing Action Scheduler background jobs without exposing job mutation or arbitrary scheduling.',
         ));
     }
 
@@ -67,21 +68,7 @@ final class Package implements AbilityPackage
             $this->detailOutputSchema(),
             array($this->backend(), 'inspect')
         );
-        $this->registerMutation(
-            'job-run',
-            'Run pending background job',
-            'Run one exact unclaimed pending Action Scheduler job through its native queue runner and return its resulting state.',
-            array($this->backend(), 'run'),
-            false,
-            true
-        );
-        $this->registerMutation(
-            'job-cancel',
-            'Cancel pending background job',
-            'Cancel one exact unclaimed pending Action Scheduler job through its native store. Already-canceled jobs are idempotent.',
-            array($this->backend(), 'cancel'),
-            true
-        );
+
     }
 
     public function canManage(): bool
@@ -100,20 +87,6 @@ final class Package implements AbilityPackage
             'execute_callback' => $callback,
             'permission_callback' => array($this, 'canManage'),
             'meta' => AbilityMetadata::owned($this->key(), true, false, true),
-        ));
-    }
-
-    private function registerMutation(string $slug, string $label, string $description, callable $callback, bool $idempotent, bool $openWorld = false): void
-    {
-        wp_register_ability($this->abilityName($slug), array(
-            'label' => $label,
-            'description' => $description,
-            'category' => $this->category(),
-            'input_schema' => $this->idInputSchema(),
-            'output_schema' => $this->detailOutputSchema(),
-            'execute_callback' => $callback,
-            'permission_callback' => array($this, 'canManage'),
-            'meta' => AbilityMetadata::owned($this->key(), false, true, $idempotent, $openWorld),
         ));
     }
 

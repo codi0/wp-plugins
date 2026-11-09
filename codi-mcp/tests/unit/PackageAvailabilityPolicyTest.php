@@ -129,6 +129,44 @@ final class PackageAvailabilityPolicyTest extends TestCase
         $this->assertSame('manage_network_options', (string) $GLOBALS['codi_mcp_test_admin_pages']['codi-mcp-network']['capability']);
     }
 
+    public function test_network_admin_places_package_policy_before_split_source_management(): void
+    {
+        if (!defined('CODI_MCP_SERVER_REST_NAMESPACE')) {
+            define('CODI_MCP_SERVER_REST_NAMESPACE', 'codi-mcp/v1');
+        }
+        $policy = new PackageAvailabilityPolicy();
+        $packages = array(new class implements AbilityPackage {
+            public function key(): string { return 'jobs'; }
+            public function label(): string { return 'Jobs'; }
+            public function abilityNames(): array { return array(); }
+            public function registerCategories(): void {}
+            public function registerAbilities(): void {}
+        });
+        $profile = new OAuthProfile('codi-network', 'codi-mcp/v1/network', true);
+        $page = new NetworkAdminPage(
+            $policy,
+            $packages,
+            $profile,
+            new OAuthServer(new OAuthStore(true), $profile, new AuditLog())
+        );
+
+        ob_start();
+        $page->render();
+        $html = (string) ob_get_clean();
+        $packagesAt = strpos($html, '<h2>Package availability</h2>');
+        $sourcesAt = strpos($html, '<h2>Source management</h2>');
+        $pluginsAt = strpos($html, '<h3>Plugins</h3>');
+        $themesAt = strpos($html, '<h3>Themes</h3>');
+
+        $this->assertTrue(is_int($packagesAt));
+        $this->assertTrue(is_int($sourcesAt));
+        $this->assertTrue(is_int($pluginsAt));
+        $this->assertTrue(is_int($themesAt));
+        $this->assertTrue($packagesAt < $sourcesAt);
+        $this->assertTrue($sourcesAt < $pluginsAt);
+        $this->assertTrue($pluginsAt < $themesAt);
+    }
+
     public function test_network_gateway_is_available_only_on_enabled_main_site(): void
     {
         $policy = new PackageAvailabilityPolicy();

@@ -4,9 +4,12 @@ declare(strict_types=1);
 
 namespace CodiMcp\Packages\Themes;
 
+use CodiMcp\Core\PackageSourcePolicy;
 use CodiMcp\Core\Downloads\ArtifactDownloadStore;
 use CodiMcp\Core\Downloads\DownloadCapabilityService;
 use CodiMcp\Core\Archives\ZipArchiveGuard;
+use CodiMcp\Core\Deployment\CodeRecoveryStore;
+use CodiMcp\Core\Deployment\PackageFingerprint;
 use CodiMcp\Core\Deployment\UpgraderResult;
 use CodiMcp\Core\Deployment\CorePackageInstaller;
 use CodiMcp\Core\Deployment\DeploymentRuntimeVerifier;
@@ -24,12 +27,18 @@ final class ThemeDeployment
     private UploadCapabilityService $uploads;
     private ArtifactDownloadStore $downloads;
     private FolderReplacement $folderReplacement;
+    private PackageSourcePolicy $sourcePolicy;
+    private CodeRecoveryStore $recoveries;
+    private PackageFingerprint $fingerprints;
 
-    public function __construct(private int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null)
+    public function __construct(private int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null, ?PackageSourcePolicy $sourcePolicy = null, ?CodeRecoveryStore $recoveries = null, ?PackageFingerprint $fingerprints = null)
     {
         $this->uploads = $uploads ?? new UploadCapabilityService(new UploadStore($maxZipBytes));
         $this->downloads = $downloads ?? new ArtifactDownloadStore($maxZipBytes, $downloadChunkBytes);
         $this->folderReplacement = $folderReplacement ?? new FolderReplacement();
+        $this->sourcePolicy = $sourcePolicy ?? new PackageSourcePolicy();
+        $this->recoveries = $recoveries ?? new CodeRecoveryStore();
+        $this->fingerprints = $fingerprints ?? new PackageFingerprint();
     }
 
     public function canInstallThemes(): bool
@@ -79,12 +88,36 @@ final class ThemeDeployment
             return $selection;
         }
         $metadata = array('stylesheet' => $stylesheet, 'filename' => $stylesheet . '.zip', 'replace' => $selection['replace']);
+        $themeRoot = function_exists('get_theme_root') ? (string) get_theme_root($stylesheet) : '';
+        $root = $themeRoot !== '' ? rtrim($themeRoot, '/\\') . '/' . $stylesheet : '';
+        if ($root !== '' && is_dir($root)) {
+            if (!$this->sourcePolicy->canCustomReplace('theme', $stylesheet, (string) $selection['replace'])) {
+                return new \WP_Error('codi_mcp_external_source', 'Installed external theme source cannot be replaced by an uploaded custom package. Use the native WordPress update path or mark the theme as managed in Codi MCP settings.');
+            }
+            if ($selection['replace'] !== 'file') {
+                try {
+                    $metadata['base_fingerprint'] = $this->fingerprints->directory($root);
+                } catch (\Throwable $error) {
+                    return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+                }
+            }
+        }
         if ($selection['replace'] === 'folder') {
             $target = $this->installedFolderTarget($stylesheet);
             if ($target instanceof \WP_Error) {
                 return $target;
             }
             $captured = $this->folderReplacement->capture($target['root'], $selection['folder']);
+            if ($captured instanceof \WP_Error) {
+                return $captured;
+            }
+            $metadata['replacement'] = $captured;
+        } else if ($selection['replace'] === 'file') {
+            $target = $this->installedFileTarget($stylesheet, $selection['file']);
+            if ($target instanceof \WP_Error) {
+                return $target;
+            }
+            $captured = $this->folderReplacement->captureFile($target['root'], $selection['file']);
             if ($captured instanceof \WP_Error) {
                 return $captured;
             }
@@ -103,7 +136,8 @@ final class ThemeDeployment
         }
         $result['replace'] = $selection['replace'];
         $result['folder'] = $selection['folder'];
-        $result['instruction'] = 'PUT bytes directly to upload.url, then call codi/theme-install with upload_id. Choose the wrapped folder layout for folder replacement.';
+        $result['file'] = $selection['file'];
+        $result['instruction'] = 'PUT upload.url, then call codi/theme-install with upload_id.';
         return $result;
     }
 
@@ -122,19 +156,58 @@ final class ThemeDeployment
         }
         $root = rtrim((string) get_theme_root($stylesheet), '/\\') . '/' . $stylesheet;
         $replacement = $this->folderReplacement;
-        return $replacement->locked($root, function () use ($replacement, $uploadId, $stylesheet) {
+        return $replacement->locked($root, function () use ($replacement, $uploadId, $stylesheet, $root) {
             $upload = $this->uploads->complete($uploadId, self::UPLOAD_PURPOSE);
             if ($upload instanceof \WP_Error) {
                 return $upload;
             }
             $metadata = (array) ($upload['meta']['metadata'] ?? array());
             $mode = array_key_exists('replace', $metadata) ? $metadata['replace'] : 'entire';
+            $existed = is_dir($root);
+            $recovery = null;
+            if ($existed) {
+                if (!$this->sourcePolicy->canCustomReplace('theme', $stylesheet, (string) $mode)) {
+                    return new \WP_Error('codi_mcp_external_source', 'Installed external theme source cannot be replaced by a custom package.');
+                }
+                if ($mode === 'file') {
+                    $selection = is_array($metadata['replacement'] ?? null) ? $metadata['replacement'] : array();
+                    $relativeFile = (string) ($selection['file'] ?? '');
+                    $before = (string) ($selection['fingerprint'] ?? '');
+                    $recovery = $this->recoveries->createFile('theme', $stylesheet, $root, $relativeFile, $before, array(
+                        'before_version' => $this->themeVersion($stylesheet),
+                        'operation' => 'custom_replace',
+                    ));
+                    if ($recovery instanceof \WP_Error) {
+                        return $recovery;
+                    }
+                } else {
+                    $expected = (string) ($metadata['base_fingerprint'] ?? '');
+                    try {
+                        $current = $this->fingerprints->directory($root);
+                    } catch (\Throwable $error) {
+                        return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+                    }
+                    if ($expected === '' || !hash_equals($expected, $current)) {
+                        return new \WP_Error('codi_mcp_source_changed', 'Installed theme source changed after upload creation. Create a fresh upload against the current source.');
+                    }
+                    $recovery = $this->recoveries->create('theme', $stylesheet, $root, $stylesheet, $current, array(
+                        'before_version' => $this->themeVersion($stylesheet),
+                        'operation' => 'custom_replace',
+                    ));
+                    if ($recovery instanceof \WP_Error) {
+                        return $recovery;
+                    }
+                }
+            }
             if ($mode === 'entire') {
                 $result = $this->installEntire($upload, $uploadId);
             } elseif ($mode === 'folder' && is_array($metadata['replacement'] ?? null)) {
                 $selection = $metadata['replacement'];
                 $target = $this->installedFolderTarget($stylesheet);
                 if ($target instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedMutation($target, $recovery, $root);
+                    }
                     return $target;
                 }
                 $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
@@ -148,6 +221,9 @@ final class ThemeDeployment
                     $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
                 );
                 if ($result instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedMutation($result, $recovery, $root);
+                    }
                     return $result;
                 }
                 if (function_exists('wp_clean_themes_cache')) {
@@ -162,12 +238,77 @@ final class ThemeDeployment
                     'version' => (string) $theme->get('Version'),
                     'active' => get_stylesheet() === $stylesheet,
                 );
+            } elseif ($mode === 'file' && is_array($metadata['replacement'] ?? null)) {
+                $selection = $metadata['replacement'];
+                $target = $this->installedFileTarget($stylesheet, (string) ($selection['file'] ?? ''));
+                if ($target instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedFileMutation($target, $recovery, $root, (string) ($selection['file'] ?? ''));
+                    }
+                    return $target;
+                }
+                $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
+                $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+                $result = $replacement->replaceFile(
+                    $target['root'],
+                    $selection,
+                    (string) $upload['path'],
+                    $stylesheet,
+                    $uploadId,
+                    $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+                );
+                if ($result instanceof \WP_Error) {
+                    if (is_array($recovery)) {
+                        $this->finalizeFailedFileMutation($result, $recovery, $root, (string) ($selection['file'] ?? ''));
+                    }
+                    return $result;
+                }
+                if (function_exists('wp_clean_themes_cache')) {
+                    wp_clean_themes_cache(true);
+                }
+                $this->cleanThemeJsonResolverCache();
+                $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
+                $theme = wp_get_theme($stylesheet);
+                $result = array(
+                    'action' => 'updated',
+                    'stylesheet' => $stylesheet,
+                    'name' => (string) $theme->get('Name'),
+                    'version' => (string) $theme->get('Version'),
+                    'active' => get_stylesheet() === $stylesheet,
+                );
             } else {
-                return new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
+                $error = new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
+                if (is_array($recovery)) {
+                    $this->finalizeFailedMutation($error, $recovery, $root);
+                }
+                return $error;
+            }
+            if ($result instanceof \WP_Error) {
+                if (is_array($recovery)) {
+                    $this->finalizeFailedMutation($result, $recovery, $root);
+                }
+                return $result;
+            }
+            if (is_array($recovery)) {
+                try {
+                    $after = $mode === 'file'
+                        ? $this->fingerprints->file($root . '/' . (string) ($metadata['replacement']['file'] ?? ''))
+                        : $this->fingerprints->directory($root);
+                } catch (\Throwable $error) {
+                    return new \WP_Error('codi_mcp_recovery_required', 'Theme changed successfully but its post-change fingerprint could not be recorded. The recovery snapshot has been retained.', array('recovery_id' => $recovery['recovery_id']));
+                }
+                $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $after, (string) ($result['version'] ?? ''));
+                if ($committed instanceof \WP_Error) {
+                    return $committed;
+                }
+                $result['recovery_id'] = (string) $committed['recovery_id'];
+                $result['recovery_expires_at'] = (string) $committed['expires_at'];
+                $result['recovery_scope'] = 'code';
             }
             if (is_array($result)) {
                 $result['replace'] = $mode;
-                $result['folder'] = $mode === 'folder' ? $metadata['replacement']['folder'] : '';
+                $result['folder'] = $mode === 'folder' ? (string) ($metadata['replacement']['folder'] ?? '') : '';
+                $result['file'] = $mode === 'file' ? (string) ($metadata['replacement']['file'] ?? '') : '';
             }
             return $result;
         });
@@ -289,17 +430,149 @@ final class ThemeDeployment
             return new \WP_Error('codi_mcp_theme_active', 'Theme or one of its child themes is active on at least one site. Switch those sites away before deleting it.');
         }
 
+        if (!$this->sourcePolicy->canDelete('theme', $stylesheet)) {
+            return new \WP_Error('codi_mcp_external_source', 'Only themes explicitly marked as managed may be deleted by Codi MCP.');
+        }
+        $root = (string) $theme->get_stylesheet_directory();
+        try {
+            $before = $this->fingerprints->directory($root);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+        }
+        $recovery = $this->recoveries->create('theme', $stylesheet, $root, $stylesheet, $before, array(
+            'before_version' => $this->themeVersion($stylesheet),
+            'operation' => 'delete',
+        ));
+        if ($recovery instanceof \WP_Error) {
+            return $recovery;
+        }
+
         $result = delete_theme($stylesheet);
         if (is_wp_error($result)) {
+            $this->finalizeFailedMutation($result, $recovery, $root);
             return $result;
         }
         if ($result === null) {
-            return new \WP_Error('codi_mcp_filesystem_credentials_required', 'WordPress requires interactive filesystem credentials and cannot delete this theme through MCP.');
+            $error = new \WP_Error('codi_mcp_filesystem_credentials_required', 'WordPress requires interactive filesystem credentials and cannot delete this theme through MCP.');
+            $this->finalizeFailedMutation($error, $recovery, $root);
+            return $error;
         }
         if ($result !== true) {
-            return new \WP_Error('codi_mcp_theme_delete_failed', 'WordPress could not delete the selected theme.');
+            $error = new \WP_Error('codi_mcp_theme_delete_failed', 'WordPress could not delete the selected theme.');
+            $this->finalizeFailedMutation($error, $recovery, $root);
+            return $error;
         }
-        return array('stylesheet' => $stylesheet, 'deleted' => true);
+        $committed = $this->recoveries->commit((string) $recovery['recovery_id'], PackageFingerprint::absent(), '');
+        if ($committed instanceof \WP_Error) {
+            return $committed;
+        }
+        return array(
+            'stylesheet' => $stylesheet,
+            'deleted' => true,
+            'recovery_id' => (string) $committed['recovery_id'],
+            'recovery_expires_at' => (string) $committed['expires_at'],
+            'recovery_scope' => 'code',
+        );
+    }
+
+    public function update($input)
+    {
+        $stylesheet = trim((string) (is_array($input) ? ($input['stylesheet'] ?? '') : ''));
+        $themes = (array) wp_get_themes(array('errors' => null, 'allowed' => null));
+        $theme = $themes[$stylesheet] ?? null;
+        if ($stylesheet === '' || !is_object($theme)) {
+            return new \WP_Error('codi_mcp_theme_not_found', 'Installed theme was not found.');
+        }
+        $updates = function_exists('get_site_transient') ? get_site_transient('update_themes') : null;
+        $responses = is_object($updates) && is_array($updates->response ?? null) ? $updates->response : array();
+        if (!isset($responses[$stylesheet])) {
+            return new \WP_Error('codi_mcp_update_unavailable', 'WordPress does not currently advertise an update for this theme.');
+        }
+        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+        $root = (string) $theme->get_stylesheet_directory();
+        return $this->folderReplacement->locked($root, function () use ($stylesheet, $root) {
+            try {
+                $before = $this->fingerprints->directory($root);
+            } catch (\Throwable $error) {
+                return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+            }
+            $recovery = $this->recoveries->create('theme', $stylesheet, $root, $stylesheet, $before, array(
+                'before_version' => $this->themeVersion($stylesheet),
+                'operation' => 'native_update',
+            ));
+            if ($recovery instanceof \WP_Error) {
+                return $recovery;
+            }
+            $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
+            $skin = new \Automatic_Upgrader_Skin();
+            $upgrader = new \Theme_Upgrader($skin);
+            $bufferLevel = ob_get_level();
+            ob_start();
+            try {
+                $raw = $upgrader->upgrade($stylesheet);
+            } catch (\Throwable $error) {
+                $raw = new \WP_Error('codi_mcp_update_failed', 'WordPress theme update failed: ' . $error->getMessage());
+            } finally {
+                while (ob_get_level() > $bufferLevel) {
+                    ob_end_clean();
+                }
+            }
+            $error = UpgraderResult::error($raw, 'theme');
+            if ($error instanceof \WP_Error) {
+                $this->finalizeFailedMutation($error, $recovery, $root);
+                return $error;
+            }
+            if (function_exists('wp_clean_themes_cache')) {
+                wp_clean_themes_cache(true);
+            }
+            try {
+                $after = $this->fingerprints->directory($root);
+            } catch (\Throwable $exception) {
+                return new \WP_Error('codi_mcp_recovery_required', 'Theme update completed but the resulting source could not be fingerprinted. The recovery snapshot has been retained.', array('recovery_id' => $recovery['recovery_id']));
+            }
+            $version = $this->themeVersion($stylesheet);
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $after, $version);
+            if ($committed instanceof \WP_Error) {
+                return $committed;
+            }
+            if ($siteIds !== array()) {
+                $verified = (new DeploymentRuntimeVerifier())->verify($siteIds);
+                if ($verified !== true) {
+                    $restored = $this->restoreCommittedUnlocked($committed, $root, $siteIds);
+                    if ($restored instanceof \WP_Error) {
+                        return new \WP_Error('codi_mcp_recovery_required', 'Theme update failed runtime verification and automatic code restoration did not complete.', array('recovery_id' => $committed['recovery_id'], 'cause' => $restored->get_error_code()));
+                    }
+                    return new \WP_Error('codi_mcp_update_rolled_back', 'Theme update failed runtime verification; the previous code was restored.', array('recovery_id' => $committed['recovery_id']));
+                }
+            }
+            return array(
+                'action' => 'updated',
+                'stylesheet' => $stylesheet,
+                'version' => $version,
+                'recovery_id' => (string) $committed['recovery_id'],
+                'recovery_expires_at' => (string) $committed['expires_at'],
+                'recovery_scope' => 'code',
+            );
+        });
+    }
+
+    public function restore($input)
+    {
+        $recoveryId = trim((string) (is_array($input) ? ($input['recovery_id'] ?? '') : ''));
+        $artifact = $this->recoveries->artifact($recoveryId, 'theme');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        $record = (array) $artifact['record'];
+        $stylesheet = (string) ($record['identity'] ?? '');
+        $root = rtrim((string) get_theme_root($stylesheet), '/\\') . '/' . $stylesheet;
+        return $this->folderReplacement->locked($root, function () use ($record, $root, $stylesheet) {
+            $siteIds = (new NetworkAssetUsage())->themeActiveSiteIds($stylesheet);
+            if (($record['metadata']['scope'] ?? '') === 'file') {
+                return $this->restoreFileCommittedUnlocked($record, $root, $siteIds);
+            }
+            return $this->restoreCommittedUnlocked($record, $root, $siteIds);
+        });
     }
 
     public function export($input)
@@ -392,6 +665,21 @@ final class ThemeDeployment
             return new \WP_Error('codi_mcp_theme_scope', 'Installed theme directory does not match its registered theme root.');
         }
         return array('root' => $root);
+    }
+
+    private function installedFileTarget(string $stylesheet, string $file): array|\WP_Error
+    {
+        if (!ReplacementSelection::validFile($file)) {
+            return new \WP_Error('codi_mcp_bad_replacement', 'Select one relative existing file.');
+        }
+        if (strcasecmp($file, 'style.css') === 0) {
+            return new \WP_Error('codi_mcp_theme_entrypoint', 'The theme style.css identity file cannot be replaced as a single file.');
+        }
+        $target = $this->installedFolderTarget($stylesheet);
+        if ($target instanceof \WP_Error) {
+            return $target;
+        }
+        return $target;
     }
 
     private function validateUploadDeclaration(string $stylesheet, int $size, string $sha256)
@@ -551,6 +839,146 @@ final class ThemeDeployment
         if (class_exists('WP_Theme_JSON_Resolver') && method_exists('WP_Theme_JSON_Resolver', 'clean_cached_data')) {
             \WP_Theme_JSON_Resolver::clean_cached_data();
         }
+    }
+
+    private function themeVersion(string $stylesheet): string
+    {
+        $theme = function_exists('wp_get_theme') ? wp_get_theme($stylesheet) : null;
+        return is_object($theme) && method_exists($theme, 'get') ? (string) $theme->get('Version') : '';
+    }
+
+    private function finalizeFailedMutation(\WP_Error $error, array $recovery, string $root): void
+    {
+        try {
+            $current = $this->fingerprints->current($root);
+            if (hash_equals((string) $recovery['before_fingerprint'], $current)) {
+                $this->recoveries->abandon((string) $recovery['recovery_id']);
+                return;
+            }
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $current, '');
+            if (is_array($committed)) {
+                $error->add_data(array('recovery_id' => $committed['recovery_id'], 'recovery_scope' => 'code'));
+            }
+        } catch (\Throwable) {
+            $error->add_data(array('recovery_id' => (string) ($recovery['recovery_id'] ?? ''), 'recovery_scope' => 'code'));
+        }
+    }
+
+    private function finalizeFailedFileMutation(\WP_Error $error, array $recovery, string $root, string $relativeFile): void
+    {
+        try {
+            $current = $this->fingerprints->file($root . '/' . $relativeFile);
+            if (hash_equals((string) $recovery['before_fingerprint'], $current)) {
+                $this->recoveries->abandon((string) $recovery['recovery_id']);
+                return;
+            }
+            $committed = $this->recoveries->commit((string) $recovery['recovery_id'], $current, '');
+            if (is_array($committed)) {
+                $error->add_data(array('recovery_id' => $committed['recovery_id'], 'recovery_scope' => 'code'));
+            }
+        } catch (\Throwable) {
+            $error->add_data(array('recovery_id' => (string) ($recovery['recovery_id'] ?? ''), 'recovery_scope' => 'code'));
+        }
+    }
+
+    private function restoreFileCommittedUnlocked(array $record, string $root, array $siteIds)
+    {
+        $recoveryId = (string) ($record['recovery_id'] ?? '');
+        $relativeFile = (string) ($record['metadata']['file'] ?? '');
+        if (!ReplacementSelection::validFile($relativeFile)) {
+            return new \WP_Error('codi_mcp_recovery_integrity', 'File recovery metadata is invalid.');
+        }
+        $artifact = $this->recoveries->artifact($recoveryId, 'theme');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        $selection = array(
+            'root' => (string) realpath($root),
+            'file' => $relativeFile,
+            'fingerprint' => (string) ($record['after_fingerprint'] ?? ''),
+        );
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+        $restored = $this->folderReplacement->replaceFile(
+            $root,
+            $selection,
+            (string) $artifact['path'],
+            (string) ($record['identity'] ?? ''),
+            bin2hex(random_bytes(16)),
+            $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+        );
+        if ($restored instanceof \WP_Error) {
+            if ($restored->get_error_code() === 'codi_mcp_file_conflict') {
+                return new \WP_Error('codi_mcp_restore_conflict', 'Selected theme file has changed since this recovery point was created; restore was refused.');
+            }
+            return $restored;
+        }
+        if (function_exists('wp_clean_themes_cache')) {
+            wp_clean_themes_cache(true);
+        }
+        $this->cleanThemeJsonResolverCache();
+        try {
+            $fingerprint = $this->fingerprints->file($root . '/' . $relativeFile);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_restore_verification', $error->getMessage());
+        }
+        if (!hash_equals((string) ($record['before_fingerprint'] ?? ''), $fingerprint)) {
+            return new \WP_Error('codi_mcp_restore_verification', 'Restored theme file does not match the recovery fingerprint.');
+        }
+        $this->recoveries->markRestored($recoveryId);
+        return array(
+            'stylesheet' => (string) ($record['identity'] ?? ''),
+            'version' => $this->themeVersion((string) ($record['identity'] ?? '')),
+            'restored' => true,
+            'recovery_id' => $recoveryId,
+            'recovery_scope' => 'code',
+        );
+    }
+
+    private function restoreCommittedUnlocked(array $record, string $root, array $siteIds)
+    {
+        $recoveryId = (string) ($record['recovery_id'] ?? '');
+        $artifact = $this->recoveries->artifact($recoveryId, 'theme');
+        if ($artifact instanceof \WP_Error) {
+            return $artifact;
+        }
+        try {
+            $current = $this->fingerprints->current($root);
+        } catch (\Throwable $error) {
+            return new \WP_Error('codi_mcp_source_inspection', $error->getMessage());
+        }
+        if (!hash_equals((string) ($record['after_fingerprint'] ?? ''), $current)) {
+            return new \WP_Error('codi_mcp_restore_conflict', 'Installed theme source has changed since this recovery point was created; restore was refused.');
+        }
+        require_once ABSPATH . 'wp-admin/includes/class-wp-upgrader.php';
+        $skin = new \Automatic_Upgrader_Skin();
+        $upgrader = new \Theme_Upgrader($skin);
+        $runtimeVerifier = $siteIds === array() ? null : new DeploymentRuntimeVerifier();
+        $result = (new CorePackageInstaller(
+            $runtimeVerifier === null ? null : static fn () => $runtimeVerifier->verify($siteIds)
+        ))->install($upgrader, (string) $artifact['path'], 'theme', (string) ($record['identity'] ?? ''), get_theme_root((string) ($record['identity'] ?? '')), $siteIds !== array());
+        $error = UpgraderResult::error($result, 'theme');
+        if ($error instanceof \WP_Error) {
+            return $error;
+        }
+        if (function_exists('wp_clean_themes_cache')) {
+            wp_clean_themes_cache(true);
+        }
+        try {
+            $restored = $this->fingerprints->directory($root);
+        } catch (\Throwable $exception) {
+            return new \WP_Error('codi_mcp_restore_verification', $exception->getMessage());
+        }
+        if (!hash_equals((string) ($record['before_fingerprint'] ?? ''), $restored)) {
+            return new \WP_Error('codi_mcp_restore_verification', 'Restored theme source does not match the recovery fingerprint.');
+        }
+        $this->recoveries->markRestored($recoveryId);
+        return array(
+            'stylesheet' => (string) ($record['identity'] ?? ''),
+            'version' => $this->themeVersion((string) ($record['identity'] ?? '')),
+            'restored' => true,
+            'recovery_id' => $recoveryId,
+            'recovery_scope' => 'code',
+        );
     }
 
     /** @return array{path:string,directory:string}|\WP_Error */

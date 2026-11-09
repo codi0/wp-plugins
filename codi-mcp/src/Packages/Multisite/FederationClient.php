@@ -94,23 +94,24 @@ final class FederationClient
             : (int) ($response['response']['code'] ?? 0);
         $rawBody = function_exists('wp_remote_retrieve_body') ? (string) wp_remote_retrieve_body($response) : (string) ($response['body'] ?? '');
         $decoded = json_decode($rawBody, true);
+        $responseDiagnostics = $this->responseDiagnostics($response, $status, $rawBody);
 
         if ($status < 200 || $status >= 300) {
             $code = is_array($decoded) && is_string($decoded['code'] ?? null) ? $decoded['code'] : 'codi_multisite_remote_error';
             $message = is_array($decoded) && is_string($decoded['message'] ?? null)
                 ? $decoded['message']
                 : 'The target site rejected the federation request.';
-            return $this->error($code, $message, $status > 0 ? $status : 502);
+            return $this->error($code, $message, $status > 0 ? $status : 502, $responseDiagnostics);
         }
         if (!is_array($decoded)) {
-            return $this->error('codi_multisite_bad_remote_response', 'The target site returned an invalid federation response.', 502);
+            return $this->error('codi_multisite_bad_remote_response', 'The target site returned an invalid federation response.', 502, $responseDiagnostics);
         }
         if (array_key_exists('error', $decoded)) {
             $remoteError = $decoded['error'];
             if (!is_array($remoteError)
                 || !is_string($remoteError['code'] ?? null)
                 || !is_string($remoteError['message'] ?? null)) {
-                return $this->error('codi_multisite_bad_remote_response', 'The target site returned an invalid federation error response.', 502);
+                return $this->error('codi_multisite_bad_remote_response', 'The target site returned an invalid federation error response.', 502, $responseDiagnostics);
             }
             $remoteStatus = (int) ($remoteError['status'] ?? 500);
             if ($remoteStatus < 400 || $remoteStatus > 599) {
@@ -160,8 +161,30 @@ final class FederationClient
         return $json;
     }
 
-    private function error(string $code, string $message, int $status): \WP_Error
+    private function responseDiagnostics($response, int $status, string $body): array
     {
-        return new \WP_Error($code, $message, array('status' => $status));
+        $contentType = '';
+        if (function_exists('wp_remote_retrieve_header')) {
+            $contentType = (string) wp_remote_retrieve_header($response, 'content-type');
+        } elseif (is_array($response)) {
+            $headers = $response['headers'] ?? array();
+            if (is_array($headers)) {
+                $contentType = (string) ($headers['content-type'] ?? $headers['Content-Type'] ?? '');
+            } elseif (is_object($headers) && method_exists($headers, 'offsetGet')) {
+                $contentType = (string) ($headers->offsetGet('content-type') ?? '');
+            }
+        }
+        return array(
+            'remote_status' => $status,
+            'content_type' => substr(trim($contentType), 0, 191),
+            'body_bytes' => strlen($body),
+            'body_sha256' => hash('sha256', $body),
+            'json_error' => json_last_error() === JSON_ERROR_NONE ? '' : substr(json_last_error_msg(), 0, 191),
+        );
+    }
+
+    private function error(string $code, string $message, int $status, array $details = array()): \WP_Error
+    {
+        return new \WP_Error($code, $message, array('status' => $status, 'details' => $details));
     }
 }

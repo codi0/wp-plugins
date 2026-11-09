@@ -73,7 +73,7 @@ final class ContentInspector
         }
 
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $args = array(
             'taxonomy' => $taxonomy,
             'hide_empty' => !empty($input['hide_empty']),
@@ -152,7 +152,7 @@ final class ContentInspector
         $canAssignOthers = $editOthersCap !== '' && function_exists('current_user_can') && current_user_can($editOthersCap);
         $currentUserId = function_exists('get_current_user_id') ? (int) get_current_user_id() : 0;
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         $search = trim((string) ($input['search'] ?? ''));
         $siteId = function_exists('get_current_blog_id') ? (int) get_current_blog_id() : 1;
 
@@ -235,9 +235,11 @@ final class ContentInspector
     public function registeredBlocksList(array $input = array()): array
     {
         if (!class_exists('WP_Block_Type_Registry')) {
-            return $this->page(array(), 1, 50);
+            return $this->page(array(), 1, 20);
         }
 
+        $detail = strtolower(trim((string) ($input['detail'] ?? 'summary')));
+        $includeSchema = $detail === 'schema';
         $registry = \WP_Block_Type_Registry::get_instance();
         $rows = array();
         foreach ((array) $registry->get_all_registered() as $blockType) {
@@ -247,39 +249,44 @@ final class ContentInspector
 
             $name = (string) ($blockType->name ?? '');
             $parts = explode('/', $name, 2);
-            $attributes = array();
-            foreach ((array) ($blockType->attributes ?? array()) as $attributeName => $definition) {
-                $definition = is_array($definition) ? $definition : array();
-                $attributes[] = array(
-                    'name' => (string) $attributeName,
-                    'type' => is_string($definition['type'] ?? null) ? $definition['type'] : '',
-                    'source' => is_string($definition['source'] ?? null) ? $definition['source'] : '',
-                    'selector' => is_string($definition['selector'] ?? null) ? $definition['selector'] : '',
-                    'has_default' => array_key_exists('default', $definition),
-                    'default_json' => array_key_exists('default', $definition) ? $this->boundedJson($definition['default'], 2000) : '',
-                    'enum_json' => array_key_exists('enum', $definition) ? $this->boundedJson($definition['enum'], 2000) : '',
-                );
-            }
-
-            $rows[] = array(
+            $row = array(
                 'name' => $name,
                 'namespace' => (string) ($parts[0] ?? ''),
                 'title' => (string) ($blockType->title ?? ''),
                 'api_version' => (int) ($blockType->api_version ?? 1),
-                'parent' => $this->stringList($blockType->parent ?? array()),
-                'ancestor' => $this->stringList($blockType->ancestor ?? array()),
-                'attributes' => $attributes,
-                'supports_json' => $this->boundedJson($blockType->supports ?? array(), 10000),
                 'dynamic' => is_callable($blockType->render_callback ?? null),
-                'editor_scripts' => $this->publicPropertyList($blockType, 'editor_script_handles'),
-                'scripts' => $this->publicPropertyList($blockType, 'script_handles'),
-                'view_scripts' => $this->publicPropertyList($blockType, 'view_script_handles'),
-                'view_script_modules' => $this->publicPropertyList($blockType, 'view_script_module_ids'),
-                'editor_styles' => $this->publicPropertyList($blockType, 'editor_style_handles'),
-                'styles' => $this->publicPropertyList($blockType, 'style_handles'),
-                'view_styles' => $this->publicPropertyList($blockType, 'view_style_handles'),
                 'source' => $this->blockSource($blockType, $name),
             );
+
+            if ($includeSchema) {
+                $attributes = array();
+                foreach ((array) ($blockType->attributes ?? array()) as $attributeName => $definition) {
+                    $definition = is_array($definition) ? $definition : array();
+                    $attributes[] = array(
+                        'name' => (string) $attributeName,
+                        'type' => is_string($definition['type'] ?? null) ? $definition['type'] : '',
+                        'source' => is_string($definition['source'] ?? null) ? $definition['source'] : '',
+                        'selector' => is_string($definition['selector'] ?? null) ? $definition['selector'] : '',
+                        'has_default' => array_key_exists('default', $definition),
+                        'default_json' => array_key_exists('default', $definition) ? $this->boundedJson($definition['default'], 2000) : '',
+                        'enum_json' => array_key_exists('enum', $definition) ? $this->boundedJson($definition['enum'], 2000) : '',
+                    );
+                }
+                $row += array(
+                    'parent' => $this->stringList($blockType->parent ?? array()),
+                    'ancestor' => $this->stringList($blockType->ancestor ?? array()),
+                    'attributes' => $attributes,
+                    'supports_json' => $this->boundedJson($blockType->supports ?? array(), 10000),
+                    'editor_scripts' => $this->publicPropertyList($blockType, 'editor_script_handles'),
+                    'scripts' => $this->publicPropertyList($blockType, 'script_handles'),
+                    'view_scripts' => $this->publicPropertyList($blockType, 'view_script_handles'),
+                    'view_script_modules' => $this->publicPropertyList($blockType, 'view_script_module_ids'),
+                    'editor_styles' => $this->publicPropertyList($blockType, 'editor_style_handles'),
+                    'styles' => $this->publicPropertyList($blockType, 'style_handles'),
+                    'view_styles' => $this->publicPropertyList($blockType, 'view_style_handles'),
+                );
+            }
+            $rows[] = $row;
         }
 
         return $this->filterAndPage($rows, $input, array('name', 'namespace', 'title'));
@@ -340,7 +347,7 @@ final class ContentInspector
         usort($rows, static fn (array $left, array $right): int => strnatcasecmp($left['key'], $right['key']));
 
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
         return $this->page($rows, $page, $perPage);
     }
 
@@ -383,7 +390,7 @@ final class ContentInspector
     {
         $search = strtolower(trim((string) ($input['search'] ?? '')));
         $page = max(1, (int) ($input['page'] ?? 1));
-        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 50)));
+        $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
 
         if ($search !== '') {
             $rows = array_values(array_filter($rows, static function (array $row) use ($search, $searchFields): bool {

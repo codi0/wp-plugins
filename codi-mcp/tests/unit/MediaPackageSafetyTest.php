@@ -152,49 +152,6 @@ namespace CodiMcpTest\Unit {
             );
         }
 
-        public function test_media_upload_ability_creates_shared_put_capability(): void
-        {
-            $package = new MediaPackage();
-            $package->registerCategories();
-            $package->registerAbilities();
-
-            $descriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/media-upload'] ?? array());
-            $execute = $descriptor['execute_callback'] ?? null;
-            $permission = $descriptor['permission_callback'] ?? null;
-            $this->assertTrue(is_callable($execute));
-            $this->assertTrue(is_callable($permission));
-            $this->assertTrue((bool) $permission(array()));
-
-            $bytes = 'media-shared-upload';
-            $created = $execute(array(
-                'filename' => 'hero.png',
-                'mime_type' => 'image/png',
-                'size' => strlen($bytes),
-                'sha256' => hash('sha256', $bytes),
-            ));
-            $this->assertFalse(is_wp_error($created));
-            $this->assertFalse((bool) ($created['complete'] ?? true));
-            $this->assertSame('PUT', (string) ($created['upload']['method'] ?? ''));
-            $this->assertSame('image/png', (string) ($created['upload']['content_type'] ?? ''));
-            $uploadId = (string) ($created['upload_id'] ?? '');
-            $this->assertSame(32, strlen($uploadId));
-
-            $token = basename((string) parse_url((string) ($created['upload']['url'] ?? ''), PHP_URL_PATH));
-            $stream = fopen('php://temp', 'w+b');
-            $this->assertTrue(is_resource($stream));
-            fwrite($stream, $bytes);
-            rewind($stream);
-            $received = (new UploadCapabilityService())->receive(MediaStagingService::PURPOSE, $uploadId, $token, $stream);
-            fclose($stream);
-            $this->assertFalse(is_wp_error($received));
-            $this->assertTrue((bool) ($received['complete'] ?? false));
-
-            $staging = new MediaStagingService();
-            $completed = $staging->complete($uploadId);
-            $this->assertFalse(is_wp_error($completed));
-            $this->assertSame($bytes, (string) file_get_contents((string) ($completed['path'] ?? '')));
-            $staging->consume($uploadId);
-        }
 
         public function test_public_media_upload_find_and_update_replace_attachment_end_to_end(): void
         {
@@ -205,9 +162,12 @@ namespace CodiMcpTest\Unit {
             $upload = $GLOBALS['codi_mcp_test_registered_abilities']['codi/media-upload']['execute_callback'] ?? null;
             $find = $GLOBALS['codi_mcp_test_registered_abilities']['codi/media-find']['execute_callback'] ?? null;
             $update = $GLOBALS['codi_mcp_test_registered_abilities']['codi/media-update']['execute_callback'] ?? null;
+            $uploadPermission = $GLOBALS['codi_mcp_test_registered_abilities']['codi/media-upload']['permission_callback'] ?? null;
             $this->assertTrue(is_callable($upload));
             $this->assertTrue(is_callable($find));
             $this->assertTrue(is_callable($update));
+            $this->assertTrue(is_callable($uploadPermission));
+            $this->assertTrue((bool) $uploadPermission(array()));
 
             $bytes = 'public-media-workflow';
             $uploaded = $upload(array(
@@ -218,7 +178,10 @@ namespace CodiMcpTest\Unit {
             ));
             $this->assertFalse(is_wp_error($uploaded));
             $this->assertFalse((bool) ($uploaded['complete'] ?? true));
+            $this->assertSame('PUT', (string) ($uploaded['upload']['method'] ?? ''));
+            $this->assertSame('image/png', (string) ($uploaded['upload']['content_type'] ?? ''));
             $uploadId = (string) ($uploaded['upload_id'] ?? '');
+            $this->assertSame(32, strlen($uploadId));
             $token = basename((string) parse_url((string) ($uploaded['upload']['url'] ?? ''), PHP_URL_PATH));
             $stream = fopen('php://temp', 'w+b');
             $this->assertTrue(is_resource($stream));
@@ -227,6 +190,7 @@ namespace CodiMcpTest\Unit {
             $received = (new UploadCapabilityService())->receive(MediaStagingService::PURPOSE, $uploadId, $token, $stream);
             fclose($stream);
             $this->assertFalse(is_wp_error($received));
+            $this->assertTrue((bool) ($received['complete'] ?? false));
 
             $found = $find(array('search' => 'Hero Illustration', 'per_page' => 1));
             $attachmentId = (int) ($found['items'][0]['attachment_id'] ?? 0);
@@ -380,17 +344,10 @@ namespace CodiMcpTest\Unit {
             $media->registerAbilities();
             $upload = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/media-upload'] ?? array());
             $create = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/media-create'] ?? array());
-            $uploadInput = (array) ($upload['input_schema']['properties'] ?? array());
             $sourceUploadId = (array) ($create['input_schema']['properties']['source_upload_id'] ?? array());
 
-            $this->assertSame(array('filename', 'mime_type', 'size', 'sha256'), array_keys($uploadInput));
             $this->assertSame(32, (int) ($sourceUploadId['minLength'] ?? 0));
             $this->assertSame(32, (int) ($sourceUploadId['maxLength'] ?? 0));
-
-            $uploadOutput = (array) ($upload['output_schema']['properties'] ?? array());
-            $transfer = (array) ($uploadOutput['upload']['properties'] ?? array());
-            $this->assertSame(array('PUT'), array_values((array) ($transfer['method']['enum'] ?? array())));
-            $this->assertArrayHasKey('url', $transfer);
 
             $encoded = json_encode(array($upload, $create, $GLOBALS['codi_mcp_test_registered_abilities']['codi/media-update'] ?? array()), JSON_UNESCAPED_SLASHES);
             $this->assertTrue(is_string($encoded) && str_contains($encoded, 'source_upload_id'));

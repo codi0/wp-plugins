@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace CodiMcp\Packages\Multisite;
 
+use CodiMcp\Core\Execution\OutputCapture;
+
 final class FederationController
 {
     private const HEADER = 'x-codi-mcp-federation';
@@ -103,22 +105,25 @@ final class FederationController
         $payload = is_array($body['payload'] ?? null) ? $body['payload'] : array();
 
         if ($operation === 'abilities') {
-            return array(
+            $output = null;
+            $abilities = OutputCapture::run(fn (): array => $this->local->catalog(), $output);
+            return array_merge(array(
                 'site_id' => $this->sites->currentSiteId(),
-                'abilities' => $this->local->catalog(),
-            );
+                'abilities' => $abilities,
+            ), $this->outputEnvelope($output));
         }
 
         $abilityName = is_string($payload['ability'] ?? null) ? trim((string) $payload['ability']) : '';
         $input = array_key_exists('arguments', $payload) ? $payload['arguments'] : null;
-        $result = $this->local->execute($abilityName, $input);
+        $output = null;
+        $result = OutputCapture::run(fn () => $this->local->execute($abilityName, $input), $output);
         if (is_wp_error($result)) {
             $data = $result->get_error_data();
             $status = is_array($data) ? (int) ($data['status'] ?? 500) : 500;
             if ($status < 400 || $status > 599) {
                 $status = 500;
             }
-            return array(
+            return array_merge(array(
                 'site_id' => $this->sites->currentSiteId(),
                 'ability' => $abilityName,
                 'error' => array(
@@ -126,13 +131,26 @@ final class FederationController
                     'message' => (string) $result->get_error_message(),
                     'status' => $status,
                 ),
-            );
+            ), $this->outputEnvelope($output));
         }
 
-        return array(
+        return array_merge(array(
             'site_id' => $this->sites->currentSiteId(),
             'ability' => $abilityName,
             'result' => $result,
+        ), $this->outputEnvelope($output));
+    }
+
+    private function outputEnvelope(?array $output): array
+    {
+        if (!is_array($output) || empty($output['supported']) || (int) ($output['bytes'] ?? 0) < 1) {
+            return array();
+        }
+        return array(
+            'unexpected_output' => array(
+                'bytes' => (int) $output['bytes'],
+                'sha256' => (string) ($output['sha256'] ?? ''),
+            ),
         );
     }
 

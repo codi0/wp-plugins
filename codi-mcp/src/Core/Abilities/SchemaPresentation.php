@@ -13,6 +13,9 @@ final class SchemaPresentation
             return $value;
         }
         $fields = (array) $value;
+        foreach (array('pattern', 'minLength', 'maxLength') as $validationOnlyKey) {
+            unset($fields[$validationOnlyKey]);
+        }
         foreach ($fields as $key => $child) {
             if (in_array($key, ['properties', 'patternProperties', '$defs', 'definitions', 'dependentSchemas'], true)) {
                 if (!is_array($child) && !$child instanceof \stdClass) {

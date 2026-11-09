@@ -87,7 +87,21 @@ final class Gateway
         $arguments = array_key_exists('arguments', $input) ? $input['arguments'] : null;
         $result = $this->client->execute($siteId, $this->currentUserId(), $ability, $arguments);
         if (is_wp_error($result)) {
-            return $result;
+            $data = $result->get_error_data();
+            $status = is_array($data) && isset($data['status']) ? (int) $data['status'] : null;
+            $details = is_array($data) && is_array($data['details'] ?? null) ? (array) $data['details'] : array();
+            if ($status !== null && ($status < 400 || $status > 599)) {
+                $status = null;
+            }
+            return array(
+                'result' => null,
+                'error' => array(
+                    'code' => (string) $result->get_error_code(),
+                    'message' => (string) $result->get_error_message(),
+                    'status' => $status,
+                    'details' => $details,
+                ),
+            );
         }
         return array('result' => $result);
     }

@@ -11,9 +11,11 @@ final class FolderReplacement
     private string $wordpressRoot;
     private \Closure $move;
     private \Closure $extract;
+    private \Closure $extractFile;
     private bool $requiresZipArchive;
+    private bool $requiresFileZipArchive;
 
-    public function __construct(?string $workspace = null, ?callable $move = null, ?string $wordpressRoot = null, ?callable $extract = null)
+    public function __construct(?string $workspace = null, ?callable $move = null, ?string $wordpressRoot = null, ?callable $extract = null, ?callable $extractFile = null)
     {
         $temporary = function_exists('get_temp_dir') ? get_temp_dir() : sys_get_temp_dir();
         $this->workspace = rtrim($workspace ?? $temporary . '/codi-mcp/deployments', '/\\');
@@ -23,6 +25,10 @@ final class FolderReplacement
         $this->extract = $extract === null
             ? static fn (string $zipPath, string $wrapper, string $folder, string $destination): true|\WP_Error => (new FolderArchive())->extract($zipPath, $wrapper, $folder, $destination)
             : \Closure::fromCallable($extract);
+        $this->requiresFileZipArchive = $extractFile === null;
+        $this->extractFile = $extractFile === null
+            ? static fn (string $zipPath, string $wrapper, string $file, string $destination): true|\WP_Error => (new FileArchive())->extract($zipPath, $wrapper, $file, $destination)
+            : \Closure::fromCallable($extractFile);
     }
 
     /** The lock is shared by site/network requests and entire/folder deployments. */
@@ -79,6 +85,36 @@ final class FolderReplacement
                 );
             } catch (\Throwable $error) {
                 return $this->error('folder_inspection', $error->getMessage());
+            }
+        });
+    }
+
+    /** @return array{root:string,file:string,fingerprint:string}|\WP_Error */
+    public function captureFile(string $root, string $file): array|\WP_Error
+    {
+        return $this->locked($root, function () use ($root, $file) {
+            $direct = $this->directFilesystem();
+            if ($direct instanceof \WP_Error) {
+                return $direct;
+            }
+            if ($this->requiresFileZipArchive && !class_exists('ZipArchive')) {
+                return $this->error('zip_required', 'File replacement requires PHP ZipArchive support.');
+            }
+            if (!$this->privateWorkspace()) {
+                return $this->error('private_staging_required', 'File replacement requires a private temporary directory outside the WordPress and document roots.');
+            }
+            $target = $this->fileTarget($root, $file);
+            if ($target instanceof \WP_Error) {
+                return $target;
+            }
+            try {
+                return array(
+                    'root' => (string) realpath($root),
+                    'file' => $file,
+                    'fingerprint' => $this->fileFingerprint($target),
+                );
+            } catch (\Throwable $error) {
+                return $this->error('file_inspection', $error->getMessage());
             }
         });
     }
@@ -230,6 +266,134 @@ final class FolderReplacement
         }
     }
 
+    /** Called under locked() by the package deployment. */
+    public function replaceFile(string $root, array $selection, string $zipPath, string $wrapper, string $uploadId, ?callable $verify = null): true|\WP_Error
+    {
+        $direct = $this->directFilesystem();
+        if ($direct instanceof \WP_Error) {
+            return $direct;
+        }
+        $file = $selection['file'] ?? null;
+        if (!ReplacementSelection::validFile($file)
+            || !is_string($selection['root'] ?? null) || realpath($root) !== $selection['root']
+            || !is_string($selection['fingerprint'] ?? null)
+            || !preg_match('/^[a-f0-9]{64}$/D', $selection['fingerprint'])
+            || !preg_match('/^[a-f0-9]{32}$/D', $uploadId)) {
+            return $this->error('bad_replacement', 'Stored file replacement metadata does not match the installed target.');
+        }
+        $target = $this->fileTarget($root, $file);
+        if ($target instanceof \WP_Error) {
+            return $target;
+        }
+        if (!$this->privateWorkspace()) {
+            return $this->error('private_staging_required', 'File replacement requires a private temporary directory outside the WordPress and document roots.');
+        }
+        $transaction = $this->workspace . '/transactions/' . $this->key($root) . '/' . $uploadId;
+        if (file_exists($transaction) || !$this->directory($transaction, 0700)) {
+            return $this->error('deployment_busy', 'This upload already has deployment state; create a fresh upload after checking its result.');
+        }
+        $backup = $transaction . '/original';
+        $staged = $transaction . '/replacement';
+        $retain = false;
+        $maintenance = null;
+        $promotionStarted = false;
+        $restoreFingerprint = $selection['fingerprint'];
+        $record = array('root' => $selection['root'], 'file' => $file, 'fingerprint' => $selection['fingerprint'], 'phase' => 'staging');
+
+        try {
+            $this->writeJournal($transaction, $record);
+            $archive = ($this->extractFile)($zipPath, $wrapper, $file, $staged);
+            if ($archive instanceof \WP_Error) {
+                return $archive;
+            }
+            $stagedStat = stat($staged);
+            $targetStat = stat(dirname($target));
+            if (!is_array($stagedStat) || !is_array($targetStat) || $stagedStat['dev'] !== $targetStat['dev']) {
+                return $this->error('same_filesystem_required', 'File staging and the installed target must be on the same filesystem.');
+            }
+            @chmod($staged, fileperms($target) & 0777);
+            $newFingerprint = $this->fileFingerprint($staged);
+            $record['replacement_fingerprint'] = $newFingerprint;
+            $record['phase'] = 'prepared';
+            $this->writeJournal($transaction, $record);
+
+            $currentTarget = $this->fileTarget($root, $file);
+            if ($currentTarget instanceof \WP_Error || $currentTarget !== $target
+                || !hash_equals($selection['fingerprint'], $this->fileFingerprint($target))) {
+                return $this->error('file_conflict', 'The selected file changed after upload creation. Create a fresh upload against its current contents.');
+            }
+
+            $maintenance = $this->beginMaintenance();
+            $this->invalidate($target);
+            if (!(($this->move)($target, $backup))) {
+                throw new \RuntimeException('Could not move the original file into recovery storage.');
+            }
+            $record['phase'] = 'backed_up';
+            $this->writeJournal($transaction, $record);
+            $restoreFingerprint = $this->fileFingerprint($backup);
+            if (!hash_equals($selection['fingerprint'], $restoreFingerprint)) {
+                throw new \RuntimeException('The selected file changed while replacement began.');
+            }
+
+            $promotionStarted = true;
+            if (!(($this->move)($staged, $target))) {
+                throw new \RuntimeException('Could not move the replacement file into place.');
+            }
+            $record['phase'] = 'installed';
+            $this->writeJournal($transaction, $record);
+            clearstatcache(true, $target);
+            if (!hash_equals($newFingerprint, $this->fileFingerprint($target))) {
+                throw new \RuntimeException('Installed file verification failed.');
+            }
+            $this->invalidate($target);
+            if ($verify !== null) {
+                $health = $verify();
+                if ($health !== true) {
+                    $message = $health instanceof \WP_Error ? $health->get_error_message() : 'WordPress runtime verification did not succeed.';
+                    throw new \RuntimeException($message);
+                }
+            }
+            $record['phase'] = 'committed';
+            $this->writeJournal($transaction, $record);
+            return true;
+        } catch (\Throwable $error) {
+            clearstatcache(true, $target);
+            if (is_file($backup) || $promotionStarted) {
+                try {
+                    if (is_file($target)) {
+                        $this->invalidate($target);
+                        if (!(($this->move)($target, $transaction . '/failed-replacement'))) {
+                            throw new \RuntimeException('Could not move the failed replacement aside.');
+                        }
+                    }
+                    if (!is_file($backup) || !(($this->move)($backup, $target))) {
+                        throw new \RuntimeException('Could not restore the original file.');
+                    }
+                    clearstatcache(true, $target);
+                    if (!hash_equals($restoreFingerprint, $this->fileFingerprint($target))) {
+                        throw new \RuntimeException('Restored file verification failed.');
+                    }
+                    $this->invalidate($target);
+                    $record['phase'] = 'rolled_back';
+                    $this->writeJournal($transaction, $record);
+                } catch (\Throwable $rollbackError) {
+                    $retain = true;
+                    error_log('Codi MCP file recovery required: ' . $transaction . ' - ' . $rollbackError->getMessage());
+                    return $this->recovery($transaction);
+                }
+            }
+            return $this->error('file_replace_failed', $error->getMessage() . ' The original file has been preserved.');
+        } finally {
+            if (!$retain) {
+                $this->endMaintenance($maintenance);
+                $this->removeTree($transaction);
+                if (is_dir($transaction)) {
+                    error_log('Codi MCP deployment cleanup is pending: ' . $transaction);
+                }
+            }
+        }
+    }
+
     /** The final folder may be absent; its parent must already exist. */
     private function target(string $root, string $folder): string|\WP_Error
     {
@@ -264,47 +428,54 @@ final class FolderReplacement
         return $path;
     }
 
+    private function fileTarget(string $root, string $file): string|\WP_Error
+    {
+        $root = rtrim($root, '/\\');
+        if (!ReplacementSelection::validFile($file) || is_link($root) || !is_dir($root) || realpath($root) === false) {
+            return $this->error('file_target', 'File replacement requires an existing directory-backed package without symbolic links.');
+        }
+        $path = (string) realpath($root);
+        $parts = explode('/', $file);
+        foreach ($parts as $index => $part) {
+            $names = @scandir($path);
+            if ($names === false || !in_array($part, $names, true)) {
+                return $this->error('file_target', 'The selected file must already exist with exact letter case.');
+            }
+            $candidate = $path . DIRECTORY_SEPARATOR . $part;
+            if (is_link($candidate)) {
+                return $this->error('file_target', 'Selected paths and their parents must not be symbolic links.');
+            }
+            if ($index === count($parts) - 1) {
+                if (!is_file($candidate)) {
+                    return $this->error('file_target', 'The selected file must be an existing regular file.');
+                }
+                return $candidate;
+            }
+            if (!is_dir($candidate)) {
+                return $this->error('file_target', 'The selected file parent path must be a directory.');
+            }
+            $path = $candidate;
+        }
+        return $this->error('file_target', 'The selected file is unavailable.');
+    }
+
+    private function fileFingerprint(string $file): string
+    {
+        $hash = hash_file('sha256', $file);
+        if (!is_string($hash) || !preg_match('/^[a-f0-9]{64}$/D', $hash)) {
+            throw new \RuntimeException('Could not fingerprint the selected file.');
+        }
+        return $hash;
+    }
+
     private function absentFingerprint(): string
     {
-        return hash('sha256', "absent-directory\0");
+        return PackageFingerprint::absent();
     }
 
     private function fingerprint(string $root): string
     {
-        $context = hash_init('sha256');
-        $entries = 0;
-        $bytes = 0;
-        $walk = function (string $path, string $relative) use (&$walk, $context, &$entries, &$bytes): void {
-            if (++$entries > 5000 || is_link($path)) {
-                throw new \RuntimeException('Folder contains links or exceeds the 5000-entry inspection limit.');
-            }
-            if (is_dir($path)) {
-                hash_update($context, "d\0" . $relative . "\0");
-                $names = scandir($path);
-                if ($names === false) {
-                    throw new \RuntimeException('Could not read a folder during verification.');
-                }
-                foreach ($names as $name) {
-                    if ($name !== '.' && $name !== '..') {
-                        $walk($path . '/' . $name, $relative . '/' . $name);
-                    }
-                }
-            } elseif (is_file($path)) {
-                $size = filesize($path);
-                if ($size === false || ($bytes += $size) > 100 * 1024 * 1024) {
-                    throw new \RuntimeException('Folder exceeds the 100 MiB inspection limit.');
-                }
-                $hash = hash_file('sha256', $path);
-                if (!is_string($hash)) {
-                    throw new \RuntimeException('Could not hash a folder file.');
-                }
-                hash_update($context, "f\0" . $relative . "\0" . $size . "\0" . $hash . "\0");
-            } else {
-                throw new \RuntimeException('Folder contains an unsupported filesystem entry.');
-            }
-        };
-        $walk($root, '');
-        return hash_final($context);
+        return (new PackageFingerprint())->directory($root);
     }
 
     private function directFilesystem(): true|\WP_Error
@@ -353,7 +524,7 @@ final class FolderReplacement
         $json = json_encode($record, JSON_THROW_ON_ERROR | JSON_UNESCAPED_SLASHES);
         if (file_put_contents($transaction . '/journal.next', $json, LOCK_EX) !== strlen($json)
             || !@rename($transaction . '/journal.next', $transaction . '/journal.json')) {
-            throw new \RuntimeException('Could not write folder recovery metadata.');
+            throw new \RuntimeException('Could not write deployment recovery metadata.');
         }
     }
 
@@ -389,12 +560,20 @@ final class FolderReplacement
 
     private function invalidate(string $root): void
     {
-        if (function_exists('wp_opcache_invalidate')) {
-            $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
-            foreach ($iterator as $file) {
-                if ($file->isFile() && !$file->isLink()) {
-                    wp_opcache_invalidate($file->getPathname(), true);
-                }
+        if (!function_exists('wp_opcache_invalidate')) {
+            return;
+        }
+        if (is_file($root) && !is_link($root)) {
+            wp_opcache_invalidate($root, true);
+            return;
+        }
+        if (!is_dir($root) || is_link($root)) {
+            return;
+        }
+        $iterator = new \RecursiveIteratorIterator(new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS));
+        foreach ($iterator as $file) {
+            if ($file->isFile() && !$file->isLink()) {
+                wp_opcache_invalidate($file->getPathname(), true);
             }
         }
     }
@@ -417,7 +596,7 @@ final class FolderReplacement
     {
         return new \WP_Error(
             'codi_mcp_recovery_required',
-            'An interrupted folder deployment requires operator recovery before further Codi deployments of this target.',
+            'An interrupted deployment requires operator recovery before further Codi deployments of this target.',
             array('recovery_directory' => $transaction)
         );
     }

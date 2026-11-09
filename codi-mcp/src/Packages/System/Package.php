@@ -108,14 +108,15 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'site-health',
             'Run Site Health checks',
-            'Run Site Health checks. include_async also runs available native async-test callbacks.',
+            'Run core Site Health tests, returning actionable results by default. include_good adds healthy results; include_async adds direct async checks; include_third_party opts into plugin/theme tests.',
             array(
                 'type' => 'object',
                 'additionalProperties' => false,
                 'properties' => array(
                     'search' => array('type' => 'string', 'maxLength' => 100),
-                    'include_good' => array('type' => 'boolean'),
+                    'include_good' => array('type' => 'boolean', 'default' => false),
                     'include_async' => array('type' => 'boolean'),
+                    'include_third_party' => array('type' => 'boolean', 'default' => false),
                 ),
             ),
             $this->siteHealthOutputSchema(),
@@ -151,8 +152,11 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'roles-list',
             'List roles and capabilities',
-            'List WordPress roles and their granted capabilities.',
-            $this->pagedInputSchema(array('search' => array('type' => 'string', 'maxLength' => 100))),
+            'List WordPress roles compactly; include_capabilities=true returns the granted capability names.',
+            $this->pagedInputSchema(array(
+                'search' => array('type' => 'string', 'maxLength' => 100),
+                'include_capabilities' => array('type' => 'boolean', 'default' => false),
+            )),
             $this->pagedOutputSchema($this->roleSchema()),
             [$this, 'rolesList']
         );
@@ -173,7 +177,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'upload-cancel',
             'Cancel staged upload',
-            'Cancel and delete one temporary Codi upload slot before it is consumed. The purpose must match the staged upload, and permission is checked against the owning plugin, theme, or media operation.',
+            'Cancel an unconsumed staged upload. purpose must match the slot; authorization follows the owning plugin/theme/media operation.',
             array(
                 'type' => 'object',
                 'additionalProperties' => false,
@@ -196,7 +200,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'cron-run',
             'Run selected cron event',
-            'Execute exactly one scheduled WordPress cron event identified by the hook, timestamp, and signature returned by codi/cron-list. The scheduled event itself is preserved.',
+            'Run exactly one scheduled cron event using hook, timestamp, and signature from cron-list. The schedule entry is preserved.',
             $this->cronRunInputSchema(),
             $this->cronRunOutputSchema(),
             [$this, 'cronRun'],
@@ -207,7 +211,7 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'rewrite-flush',
             'Flush rewrite rules',
-            'Regenerate WordPress rewrite rules. hard=false performs a soft flush; hard=true may also update .htaccess and should be used deliberately.',
+            'Regenerate rewrite rules; hard=false is soft, hard=true may update .htaccess.',
             array(
                 'type' => 'object',
                 'additionalProperties' => false,
@@ -521,6 +525,11 @@ final class Package implements AbilityPackage
             'good' => array('type' => 'integer'),
             'informational' => array('type' => 'integer'),
         ));
+        $unexpectedOutput = $this->strictObject(array(
+            'test' => array('type' => 'string'),
+            'bytes' => array('type' => 'integer'),
+            'sha256' => array('type' => 'string'),
+        ));
         return $this->strictObject(array(
             'critical' => $list,
             'recommended' => $list,
@@ -529,6 +538,9 @@ final class Package implements AbilityPackage
             'counts' => $counts,
             'async_tests_run' => array('type' => 'integer'),
             'async_tests_omitted' => array('type' => 'integer'),
+            'third_party_tests_run' => array('type' => 'integer'),
+            'third_party_tests_omitted' => array('type' => 'integer'),
+            'unexpected_output' => array('type' => 'array', 'items' => $unexpectedOutput),
         ));
     }
 
@@ -552,6 +564,8 @@ final class Package implements AbilityPackage
             'object_cache_dropin' => array('type' => 'boolean'),
             'wp_cache_constant' => array('type' => 'boolean'),
             'implementation_class' => array('type' => 'string'),
+            'dropin_name' => array('type' => 'string'),
+            'dropin_version' => array('type' => 'string'),
             'supports_add_multiple' => array('type' => 'boolean'),
             'supports_set_multiple' => array('type' => 'boolean'),
             'supports_get_multiple' => array('type' => 'boolean'),
@@ -563,11 +577,17 @@ final class Package implements AbilityPackage
 
     private function roleSchema(): array
     {
-        return $this->strictObject(array(
-            'role' => array('type' => 'string'),
-            'name' => array('type' => 'string'),
-            'capabilities' => array('type' => 'array', 'items' => array('type' => 'string')),
-        ));
+        return array(
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => array(
+                'role' => array('type' => 'string'),
+                'name' => array('type' => 'string'),
+                'capability_count' => array('type' => 'integer'),
+                'capabilities' => array('type' => 'array', 'items' => array('type' => 'string')),
+            ),
+            'required' => array('role', 'name', 'capability_count'),
+        );
     }
 
     private function auditLogOutputSchema(): array

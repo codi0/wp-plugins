@@ -55,7 +55,7 @@ final class MediaStagingService
         if ($result instanceof \WP_Error) {
             return $result;
         }
-        $result['instruction'] = 'PUT bytes directly to upload.url, then call codi/media-create or codi/media-update with source_upload_id=upload_id.';
+        $result['instruction'] = 'PUT upload.url, then use upload_id as source_upload_id.';
         return $result;
     }
 

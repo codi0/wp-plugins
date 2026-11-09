@@ -7,6 +7,7 @@ namespace CodiMcpTest\Unit;
 use CodiMcp\Adapter\CodiServer;
 use CodiMcp\Adapter\DirectMcpPresentation;
 use CodiMcp\Core\Abilities\AbilityCatalogue;
+use CodiMcp\Core\Abilities\SchemaPresentation;
 use CodiMcp\Exposure\ExposurePolicy;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
 use CodiMcp\Packages\Content\Package as ContentPackage;
@@ -18,6 +19,7 @@ use CodiMcp\Packages\Plugins\Package as PluginsPackage;
 use CodiMcp\Packages\Presentation\Package as PresentationPackage;
 use CodiMcp\Packages\Site\Package as SitePackage;
 use CodiMcp\Packages\System\SystemInspector;
+use CodiMcp\Packages\System\SiteHealthTestScope;
 use CodiMcp\Packages\System\Package as SystemPackage;
 use CodiMcp\Packages\Themes\Package as ThemesPackage;
 use CodiMcpTest\Framework\TestCase;
@@ -63,6 +65,33 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             }
         }
 
+        $modelSurfaceChars = 0;
+        foreach ($GLOBALS['codi_mcp_test_registered_abilities'] as $name => $descriptor) {
+            $description = trim((string) ($descriptor['description'] ?? ''));
+            $this->assertTrue($description !== '', $name . ' must have a model-useful description.');
+            $this->assertTrue(strlen($description) <= 220, $name . ' description is too verbose for the advertised tool catalogue.');
+
+            $meta = is_array($descriptor['meta']['codi_mcp'] ?? null) ? $descriptor['meta']['codi_mcp'] : array();
+            $modelInput = is_array($meta['model_input_schema'] ?? null)
+                ? $meta['model_input_schema']
+                : (array) ($descriptor['input_schema'] ?? array());
+            $presented = SchemaPresentation::normalize($modelInput);
+            $encoded = json_encode($presented, JSON_UNESCAPED_SLASHES);
+            $this->assertTrue(is_string($encoded), $name . ' model input schema must serialize.');
+            $this->assertFalse(str_contains($encoded, '"pattern":'), $name . ' must not advertise regex validators.');
+            $this->assertFalse(str_contains($encoded, '"minLength":'), $name . ' must not advertise lexical length validators.');
+            $this->assertFalse(str_contains($encoded, '"maxLength":'), $name . ' must not advertise lexical length validators.');
+
+            $modelSurfaceChars += strlen((string) $name)
+                + strlen((string) ($descriptor['label'] ?? ''))
+                + strlen($description)
+                + strlen($encoded);
+        }
+        $this->assertTrue(
+            $modelSurfaceChars <= 36000,
+            'The advertised Codi MCP tool catalogue exceeds the 36k-character model-surface budget.'
+        );
+
         $uploadDescriptor = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-upload'] ?? array());
         $uploadSchema = (array) ($uploadDescriptor['input_schema'] ?? array());
         $uploadProperties = (array) ($uploadSchema['properties'] ?? array());
@@ -70,17 +99,66 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             $this->assertArrayHasKey($field, $uploadProperties);
         }
         $this->assertSame(false, $uploadSchema['additionalProperties']);
-        $this->assertSame(array('entire', 'folder'), $uploadProperties['replace']['enum']);
+        $this->assertSame(array('entire', 'folder', 'file'), $uploadProperties['replace']['enum']);
         $this->assertSame(array('plugin_slug', 'size', 'sha256'), array_values((array) ($uploadSchema['required'] ?? array())));
         $this->assertSame(['upload_id'], $GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-install']['input_schema']['required']);
         $diagnosticRunInput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-run']['input_schema']['properties'] ?? array());
         $this->assertArrayHasKey('actor_user_id', $diagnosticRunInput);
         $this->assertArrayHasKey('explain_slow_queries', $diagnosticRunInput);
+        $this->assertArrayHasKey('callback_timing', $diagnosticRunInput);
+        $diagnosticRunSummary = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-run']['output_schema']['properties']['summary']['properties'] ?? array());
+        $this->assertArrayHasKey('correlations', $diagnosticRunSummary);
+        $diagnosticInspectSections = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-inspect']['input_schema']['properties']['section']['enum'] ?? array());
+        $this->assertTrue(in_array('correlations', $diagnosticInspectSections, true));
         $diagnosticArmInput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-arm']['input_schema']['properties'] ?? array());
         $this->assertSame(array('GET', 'POST', 'PUT', 'PATCH', 'DELETE'), array_values((array) ($diagnosticArmInput['method']['enum'] ?? array())));
         $this->assertArrayHasKey('explain_slow_queries', $diagnosticArmInput);
-        $this->assertFalse(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/jobs-list']), 'Jobs abilities must not register when Action Scheduler is unavailable.');
+        $this->assertArrayHasKey('callback_timing', $diagnosticArmInput);
+        $this->assertTrue(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/jobs-list']), 'Read-only Jobs discovery must not depend on Action Scheduler load order.');
+        $this->assertTrue(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/job-inspect']));
+        $this->assertFalse(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/job-run']));
+        $this->assertFalse(isset($GLOBALS['codi_mcp_test_registered_abilities']['codi/job-cancel']));
         $this->assertFalse(isset($uploadProperties['data']));
+
+        $pluginList = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/plugins-list'] ?? array());
+        $this->assertSame(array('summary', 'full'), (array) ($pluginList['input_schema']['properties']['detail']['enum'] ?? array()));
+        $pluginListItem = (array) ($pluginList['output_schema']['properties']['items']['items'] ?? array());
+        $this->assertNotContains('description', (array) ($pluginListItem['required'] ?? array()));
+        $this->assertArrayHasKey('description', (array) ($pluginListItem['properties'] ?? array()));
+
+        $themeList = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/themes-list'] ?? array());
+        $this->assertSame(array('summary', 'full'), (array) ($themeList['input_schema']['properties']['detail']['enum'] ?? array()));
+        $themeListItem = (array) ($themeList['output_schema']['properties']['items']['items'] ?? array());
+        $this->assertNotContains('description', (array) ($themeListItem['required'] ?? array()));
+        $this->assertArrayHasKey('description', (array) ($themeListItem['properties'] ?? array()));
+
+        $blocksList = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/registered-blocks-list'] ?? array());
+        $this->assertSame(array('summary', 'schema'), (array) ($blocksList['input_schema']['properties']['detail']['enum'] ?? array()));
+        $blockItem = (array) ($blocksList['output_schema']['properties']['items']['items'] ?? array());
+        $this->assertNotContains('attributes', (array) ($blockItem['required'] ?? array()));
+        $this->assertArrayHasKey('attributes', (array) ($blockItem['properties'] ?? array()));
+
+        $rolesList = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/roles-list'] ?? array());
+        $this->assertArrayHasKey('include_capabilities', (array) ($rolesList['input_schema']['properties'] ?? array()));
+        $roleItem = (array) ($rolesList['output_schema']['properties']['items']['items'] ?? array());
+        $this->assertContains('capability_count', (array) ($roleItem['required'] ?? array()));
+        $this->assertNotContains('capabilities', (array) ($roleItem['required'] ?? array()));
+
+        $cacheInfo = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/cache-info'] ?? array());
+        $cacheProperties = (array) ($cacheInfo['output_schema']['properties'] ?? array());
+        $this->assertArrayHasKey('dropin_name', $cacheProperties);
+        $this->assertArrayHasKey('dropin_version', $cacheProperties);
+
+        $siteHealth = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/site-health'] ?? array());
+        $siteHealthInput = (array) ($siteHealth['input_schema']['properties'] ?? array());
+        $this->assertArrayHasKey('include_third_party', $siteHealthInput);
+        $this->assertSame(false, (bool) ($siteHealthInput['include_good']['default'] ?? true));
+        $this->assertSame(false, (bool) ($siteHealthInput['include_third_party']['default'] ?? true));
+        $siteHealthProperties = (array) ($siteHealth['output_schema']['properties'] ?? array());
+        $this->assertArrayHasKey('unexpected_output', $siteHealthProperties);
+        $this->assertSame('array', (string) ($siteHealthProperties['unexpected_output']['type'] ?? ''));
+        $this->assertArrayHasKey('third_party_tests_run', $siteHealthProperties);
+        $this->assertArrayHasKey('third_party_tests_omitted', $siteHealthProperties);
 
         $uploadOutput = (array) ($uploadDescriptor['output_schema'] ?? array());
         $uploadOutputProperties = (array) ($uploadOutput['properties'] ?? array());
@@ -96,7 +174,7 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         foreach (array('stylesheet', 'size', 'sha256', 'replace', 'folder') as $field) {
             $this->assertArrayHasKey($field, $themeInput);
         }
-        $this->assertSame(array('entire', 'folder'), $themeInput['replace']['enum']);
+        $this->assertSame(array('entire', 'folder', 'file'), $themeInput['replace']['enum']);
         $themeTransfer = (array) (($themeUpload['output_schema']['properties']['upload']['properties'] ?? array()));
         $this->assertSame(array('PUT'), array_values((array) ($themeTransfer['method']['enum'] ?? array())));
         $this->assertArrayHasKey('url', $themeTransfer);
@@ -148,7 +226,11 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             'codi/db-tables',
             'codi/db-schema',
             'codi/db-query',
+            'codi/options-autoload',
             'codi/diagnostic-inspect',
+            'codi/diagnostic-compare',
+            'codi/jobs-list',
+            'codi/job-inspect',
         ) as $name) {
             $annotations = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$name]['meta']['annotations'] ?? array());
             $this->assertTrue((bool) ($annotations['readonly'] ?? false), $name . ' must be readonly.');
@@ -158,6 +240,8 @@ final class DevelopmentAbilityPackagesTest extends TestCase
 
         foreach (array(
             'codi/plugin-delete' => false,
+            'codi/plugin-update' => false,
+            'codi/plugin-restore' => false,
             'codi/cron-run' => false,
             'codi/rewrite-flush' => true,
             'codi/cache-flush' => true,
@@ -166,6 +250,8 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             'codi/theme-install' => false,
             'codi/theme-activate' => true,
             'codi/theme-delete' => false,
+            'codi/theme-update' => false,
+            'codi/theme-restore' => false,
             'codi/term-update' => true,
             'codi/term-delete' => false,
             'codi/post-terms-update' => true,
@@ -184,6 +270,8 @@ final class DevelopmentAbilityPackagesTest extends TestCase
             'codi/presentation-commit' => false,
             'codi/presentation-rollback' => false,
             'codi/diagnostic-run' => false,
+            'codi/db-index' => true,
+            'codi/options-autoload-set' => true,
         ) as $name => $idempotent) {
             $annotations = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$name]['meta']['annotations'] ?? array());
             $this->assertFalse((bool) ($annotations['readonly'] ?? true), $name . ' must be mutating.');
@@ -322,6 +410,29 @@ final class DevelopmentAbilityPackagesTest extends TestCase
     }
 
     /** @return array<int,object> */
+    public function test_site_health_scope_only_treats_current_core_instance_methods_as_core(): void
+    {
+        $instance = new class {
+            public function get_test_core(): array
+            {
+                return array();
+            }
+
+            public function plugin_like_callback(): array
+            {
+                return array();
+            }
+        };
+        $other = clone $instance;
+
+        $core = SiteHealthTestScope::resolve('core', $instance);
+        $this->assertTrue(is_callable($core));
+        $this->assertTrue(SiteHealthTestScope::isCore($core, $instance));
+        $this->assertFalse(SiteHealthTestScope::isCore(array($other, 'get_test_core'), $instance));
+        $this->assertFalse(SiteHealthTestScope::isCore(array($instance, 'plugin_like_callback'), $instance));
+        $this->assertFalse(SiteHealthTestScope::isCore(static fn (): array => array(), $instance));
+    }
+
     private function packages(): array
     {
         return array(

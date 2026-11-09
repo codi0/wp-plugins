@@ -4,6 +4,7 @@ namespace CodiMcp\Admin;
 
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\PackageAvailabilityPolicy;
+use CodiMcp\Core\PackageSourcePolicy;
 use CodiMcp\Auth\OAuthProfile;
 use CodiMcp\Auth\OAuthServer;
 
@@ -15,17 +16,19 @@ final class NetworkAdminPage
     private PackageAvailabilityPolicy $availability;
     private OAuthProfile $profile;
     private OAuthServer $oauthServer;
+    private PackageSourcePolicy $sourcePolicy;
 
     /** @var AbilityPackage[] */
     private array $packages;
 
     /** @param AbilityPackage[] $packages */
-    public function __construct(PackageAvailabilityPolicy $availability, array $packages, OAuthProfile $profile, OAuthServer $oauthServer)
+    public function __construct(PackageAvailabilityPolicy $availability, array $packages, OAuthProfile $profile, OAuthServer $oauthServer, ?PackageSourcePolicy $sourcePolicy = null)
     {
         $this->availability = $availability;
         $this->packages = array_values($packages);
         $this->profile = $profile;
         $this->oauthServer = $oauthServer;
+        $this->sourcePolicy = $sourcePolicy ?? new PackageSourcePolicy();
     }
 
     public function registerMenu(): void
@@ -95,6 +98,22 @@ final class NetworkAdminPage
             : array('error' => 'oauth'));
     }
 
+    public function saveSourcePolicy(): void
+    {
+        if (!$this->canManage()) {
+            return;
+        }
+        if (function_exists('check_admin_referer')) {
+            check_admin_referer('codi_mcp_save_network_source_policy');
+        }
+        $managed = isset($_POST['managed_sources']) && is_array($_POST['managed_sources'])
+            ? array_values(array_filter(array_map('sanitize_text_field', wp_unslash($_POST['managed_sources'])), 'is_string'))
+            : array();
+        $this->redirect($this->sourcePolicy->saveManaged($managed)
+            ? array('updated' => 'sources')
+            : array('error' => 'sources'));
+    }
+
     public function render(): void
     {
         if (!$this->canManage()) {
@@ -103,10 +122,12 @@ final class NetworkAdminPage
 
         echo '<div class="wrap"><h1>Codi MCP — Network</h1>';
         if (!empty($_GET['error'])) {
-            echo '<div class="notice notice-error"><p>' . (($_GET['error'] ?? '') === 'oauth' ? 'The network OAuth client could not be disconnected.' : 'Network package policy could not be saved. No persisted change was confirmed.') . '</p></div>';
+            $message = ($_GET['error'] ?? '') === 'oauth' ? 'The network OAuth client could not be disconnected.' : ((($_GET['error'] ?? '') === 'sources') ? 'Managed source policy could not be saved.' : 'Network package policy could not be saved. No persisted change was confirmed.');
+            echo '<div class="notice notice-error"><p>' . $this->escape($message) . '</p></div>';
         }
         if (!empty($_GET['updated'])) {
-            echo '<div class="notice notice-success is-dismissible"><p>' . (($_GET['updated'] ?? '') === 'oauth' ? 'Network OAuth client disconnected and its active credentials revoked.' : 'Network package policy updated.') . '</p></div>';
+            $message = ($_GET['updated'] ?? '') === 'oauth' ? 'Network OAuth client disconnected and its active credentials revoked.' : ((($_GET['updated'] ?? '') === 'sources') ? 'Managed source policy updated.' : 'Network package policy updated.');
+            echo '<div class="notice notice-success is-dismissible"><p>' . $this->escape($message) . '</p></div>';
         }
 
         echo '<p>Control bundled package policy across the multisite network. The network endpoint is a separate MCP resource from every site endpoint, including the main site.</p>';
@@ -146,7 +167,65 @@ final class NetworkAdminPage
         } else {
             echo '<p><button type="submit">Save network package policy</button></p>';
         }
-        echo '</form></div>';
+        echo '</form>';
+        $this->renderSourcePolicy();
+        echo '</div>';
+    }
+
+    private function renderSourcePolicy(): void
+    {
+        echo '<h2>Source management</h2>';
+        echo '<p>Plugin and theme files are shared network resources. Codi MCP is protected, and the codi-mcp-custom companion is intrinsically managed. Other packages require explicit source-management approval before custom replacement or deletion. External packages remain inspectable and may use WordPress-advertised native updates.</p>';
+        echo '<form method="post" action="' . $this->escape($this->sourcePolicyUrl()) . '">';
+        if (function_exists('wp_nonce_field')) {
+            wp_nonce_field('codi_mcp_save_network_source_policy');
+        }
+        $rows = $this->sourceRows();
+        foreach (array('plugin' => 'Plugins', 'theme' => 'Themes') as $kind => $label) {
+            echo '<h3>' . $this->escape($label) . '</h3>';
+            echo '<table class="widefat striped" style="max-width:1100px"><thead><tr><th style="width:90px">Managed</th><th>Package</th><th>Policy</th></tr></thead><tbody>';
+            foreach (array_filter($rows, static fn (array $row): bool => $row['kind'] === $kind) as $row) {
+                $fixed = (bool) ($row['fixed'] ?? false);
+                echo '<tr><td>' . ($fixed ? '—' : '<input type="checkbox" name="managed_sources[]" value="' . $this->escapeAttr($row['key']) . '"' . ($row['policy'] === PackageSourcePolicy::MANAGED ? ' checked' : '') . '>') . '</td>';
+                echo '<td><strong>' . $this->escape($row['name']) . '</strong><br><code>' . $this->escape($row['key']) . '</code></td><td>' . $this->escape($row['policy']) . '</td></tr>';
+            }
+            echo '</tbody></table>';
+        }
+        if (function_exists('submit_button')) {
+            submit_button('Save source management', 'secondary');
+        } else {
+            echo '<p><button type="submit">Save source management</button></p>';
+        }
+        echo '</form>';
+    }
+
+    /** @return array<int,array{kind:string,key:string,name:string,policy:string}> */
+    private function sourceRows(): array
+    {
+        $rows = array();
+        if (!function_exists('get_plugins') && defined('ABSPATH') && is_file(ABSPATH . 'wp-admin/includes/plugin.php')) {
+            require_once ABSPATH . 'wp-admin/includes/plugin.php';
+        }
+        if (function_exists('get_plugins')) {
+            foreach ((array) get_plugins() as $file => $data) {
+                $slug = dirname((string) $file);
+                if ($slug === '.' || str_contains($slug, '/')) {
+                    continue;
+                }
+                $rows[] = array('kind' => 'plugin', 'key' => $this->sourcePolicy->key('plugin', $slug), 'name' => (string) ($data['Name'] ?? $slug), 'policy' => $this->sourcePolicy->state('plugin', $slug), 'fixed' => $this->sourcePolicy->isFixed('plugin', $slug));
+            }
+        }
+        if (function_exists('wp_get_themes')) {
+            foreach ((array) wp_get_themes(array('errors' => null, 'allowed' => null)) as $stylesheet => $theme) {
+                if (!is_object($theme)) {
+                    continue;
+                }
+                $name = method_exists($theme, 'get') ? (string) $theme->get('Name') : (string) $stylesheet;
+                $rows[] = array('kind' => 'theme', 'key' => $this->sourcePolicy->key('theme', (string) $stylesheet), 'name' => $name, 'policy' => $this->sourcePolicy->state('theme', (string) $stylesheet), 'fixed' => $this->sourcePolicy->isFixed('theme', (string) $stylesheet));
+            }
+        }
+        usort($rows, static fn (array $a, array $b): int => strnatcasecmp($a['key'], $b['key']));
+        return $rows;
     }
 
     private function renderOAuthClients(): void
@@ -244,6 +323,13 @@ final class NetworkAdminPage
     {
         return function_exists('network_admin_url')
             ? (string) network_admin_url('edit.php?action=codi_mcp_revoke_network_oauth_client')
+            : '';
+    }
+
+    private function sourcePolicyUrl(): string
+    {
+        return function_exists('network_admin_url')
+            ? (string) network_admin_url('edit.php?action=codi_mcp_save_network_source_policy')
             : '';
     }
 

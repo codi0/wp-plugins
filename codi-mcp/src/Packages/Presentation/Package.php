@@ -44,10 +44,10 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-help',
             'Presentation help',
-            'Read the block-editing workflow, supported operations, and limitations.',
-            $this->emptySchema(),
+            'List Presentation operations; action returns the accepted input schema for one operation.',
+            $this->helpInputSchema(),
             $this->helpOutputSchema(),
-            fn () => $this->manager()->help(),
+            fn ($input = array()) => $this->presentationHelp(is_array($input) ? $input : array()),
             fn () => $this->manager()->canInspect()
         );
         $this->registerReadOnly(
@@ -62,8 +62,8 @@ final class Package implements AbilityPackage
         $this->registerReadOnly(
             'presentation-inspect',
             'Inspect presentation state',
-            'Read a page, template, pattern, navigation, or style target and its block paths. Use a ref from presentation-find.',
-            $this->strictObject(array('ref' => $this->refSchema())),
+            'Read a Presentation target; blocks is compact, raw is serialized state, full returns both.',
+            $this->inspectInputSchema(),
             $this->inspectOutputSchema(),
             fn ($input = array()) => $this->manager()->inspect(is_array($input) ? $input : array()),
             fn () => $this->manager()->canInspect()
@@ -71,13 +71,14 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'presentation-preview',
             'Preview presentation mutation',
-            'Preview changes to page/post blocks, text, headings, buttons, images, navigation, templates/parts, or Global Styles. Returns preview_id; apply with presentation-commit.',
+            'Preview Presentation operations and return preview_id for presentation-commit. Use presentation-help(action=...) for accepted fields.',
             $this->previewInputSchema(),
             $this->previewOutputSchema(),
             fn ($input = array()) => $this->manager()->preview(is_array($input) ? $input : array()),
             fn ($input = array()) => $this->manager()->canPreview(is_array($input) ? $input : array()),
             false,
-            false
+            false,
+            $this->modelPreviewInputSchema()
         );
         $this->registerReadOnly(
             'presentation-verify',
@@ -121,6 +122,70 @@ final class Package implements AbilityPackage
         );
     }
 
+    /** @return array<string,mixed>|\WP_Error */
+    public function presentationHelp(array $input = array())
+    {
+        $help = $this->manager()->help();
+        $action = strtolower(trim((string) ($input['action'] ?? '')));
+        $search = strtolower(trim((string) ($input['search'] ?? '')));
+        $targetKind = strtolower(trim((string) ($input['target_kind'] ?? '')));
+        $operations = array();
+
+        foreach ((array) ($help['operations'] ?? array()) as $operation) {
+            if (!is_array($operation)) {
+                continue;
+            }
+            $name = strtolower((string) ($operation['action'] ?? ''));
+            $summary = strtolower((string) ($operation['summary'] ?? ''));
+            $targets = array_values(array_map('strval', (array) ($operation['target_kinds'] ?? array())));
+            if ($action !== '' && $name !== $action) {
+                continue;
+            }
+            if ($search !== '' && !str_contains($name . ' ' . $summary, $search)) {
+                continue;
+            }
+            if ($targetKind !== '' && !in_array($targetKind, $targets, true)) {
+                continue;
+            }
+
+            $row = array(
+                'action' => (string) ($operation['action'] ?? ''),
+                'target_kinds' => $targets,
+            );
+            if ($action !== '' || $search !== '' || $targetKind !== '') {
+                $row['summary'] = (string) ($operation['summary'] ?? '');
+            }
+            if ($action !== '') {
+                $schema = $this->operationSchemaForAction($action);
+                if ($schema === null) {
+                    return new \WP_Error('codi_mcp_presentation_operation_not_found', 'The requested Presentation operation is unavailable.');
+                }
+                $row['input_schema'] = $schema;
+            }
+            $operations[] = $row;
+        }
+
+        if ($action !== '' && $operations === array()) {
+            return new \WP_Error('codi_mcp_presentation_operation_not_found', 'The requested Presentation operation is unavailable.');
+        }
+        $help['operations'] = $operations;
+        return $help;
+    }
+
+    private function operationSchemaForAction(string $action): ?array
+    {
+        foreach ((array) ($this->operationSchema()['oneOf'] ?? array()) as $schema) {
+            if (!is_array($schema)) {
+                continue;
+            }
+            $enum = (array) ($schema['properties']['action']['enum'] ?? array());
+            if ($enum === array($action)) {
+                return $schema;
+            }
+        }
+        return null;
+    }
+
     private function manager(): PresentationManager { return $this->manager ??= new PresentationManager(); }
     private function abilityName(string $slug): string { return rtrim(CODI_MCP_ABILITY_PREFIX, '/') . '/' . ltrim($slug, '/'); }
     private function category(): string { return rtrim(CODI_MCP_ABILITY_PREFIX, '/') . '-presentation'; }
@@ -139,8 +204,12 @@ final class Package implements AbilityPackage
         ));
     }
 
-    private function registerMutation(string $slug, string $label, string $description, array $input, array $output, callable $execute, callable $permission, bool $destructive, bool $idempotent): void
+    private function registerMutation(string $slug, string $label, string $description, array $input, array $output, callable $execute, callable $permission, bool $destructive, bool $idempotent, ?array $modelInput = null): void
     {
+        $meta = AbilityMetadata::owned($this->key(), false, $destructive, $idempotent);
+        if ($modelInput !== null) {
+            $meta['codi_mcp']['model_input_schema'] = $modelInput;
+        }
         wp_register_ability($this->abilityName($slug), array(
             'label' => $label,
             'description' => $description,
@@ -149,7 +218,7 @@ final class Package implements AbilityPackage
             'output_schema' => $output,
             'execute_callback' => $execute,
             'permission_callback' => $permission,
-            'meta' => AbilityMetadata::owned($this->key(), false, $destructive, $idempotent),
+            'meta' => $meta,
         ));
     }
 
@@ -190,9 +259,36 @@ final class Package implements AbilityPackage
         return $this->strictObject($properties);
     }
 
+    private function helpInputSchema(): array
+    {
+        return $this->optionalObject(array(
+            'action' => array('type' => 'string', 'maxLength' => 100, 'description' => 'Exact action; returns its input schema.'),
+            'search' => array('type' => 'string', 'maxLength' => 100),
+            'target_kind' => array('type' => 'string', 'enum' => array('content', 'template', 'template_part', 'pattern', 'navigation', 'global_styles')),
+        ));
+    }
+
+    private function inspectInputSchema(): array
+    {
+        return $this->optionalObject(array(
+            'ref' => $this->refSchema(),
+            'detail' => array('type' => 'string', 'enum' => array('blocks', 'raw', 'full'), 'default' => 'blocks'),
+        ), array('ref'));
+    }
+
     private function helpOutputSchema(): array
     {
-        $operation = $this->strictObject(array('action' => array('type' => 'string'), 'summary' => array('type' => 'string'), 'target_kinds' => $this->stringArray()));
+        $operation = array(
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => array(
+                'action' => array('type' => 'string'),
+                'summary' => array('type' => 'string'),
+                'target_kinds' => $this->stringArray(),
+                'input_schema' => array('type' => 'object', 'additionalProperties' => true),
+            ),
+            'required' => array('action', 'target_kinds'),
+        );
         return $this->strictObject(array(
             'package' => array('type' => 'string'),
             'workflow' => $this->stringArray(),
@@ -247,15 +343,20 @@ final class Package implements AbilityPackage
 
     private function inspectOutputSchema(): array
     {
-        return $this->strictObject(array(
-            'surface' => $this->surfaceSchema(false),
-            'content' => array('type' => 'string'),
-            'template' => array('type' => 'string'),
-            'global_styles' => array('type' => 'object', 'additionalProperties' => true),
-            'sync_status' => array('type' => 'string'),
-            'blocks' => array('type' => 'array', 'items' => $this->blockSummarySchema()),
-            'dependencies' => $this->dependenciesSchema(),
-        ));
+        return array(
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => array(
+                'surface' => $this->surfaceSchema(false),
+                'content' => array('type' => 'string'),
+                'template' => array('type' => 'string'),
+                'global_styles' => array('type' => 'object', 'additionalProperties' => true),
+                'sync_status' => array('type' => 'string'),
+                'blocks' => array('type' => 'array', 'items' => $this->blockSummarySchema()),
+                'dependencies' => $this->dependenciesSchema(),
+            ),
+            'required' => array('surface', 'template', 'global_styles', 'sync_status'),
+        );
     }
 
     private function operationSchema(): array
@@ -379,6 +480,26 @@ final class Package implements AbilityPackage
         return $this->optionalObject(array(
             'ref' => $this->refSchema(),
             'operations' => array('type' => 'array', 'minItems' => 1, 'maxItems' => 50, 'items' => $this->operationSchema()),
+        ), array('operations'));
+    }
+
+    private function modelPreviewInputSchema(): array
+    {
+        return $this->optionalObject(array(
+            'ref' => $this->refSchema(),
+            'operations' => array(
+                'type' => 'array',
+                'minItems' => 1,
+                'maxItems' => 50,
+                'items' => array(
+                    'type' => 'object',
+                    'additionalProperties' => true,
+                    'properties' => array(
+                        'action' => array('type' => 'string', 'minLength' => 1, 'maxLength' => 100, 'description' => 'Use presentation-help(action=...) for accepted fields.'),
+                    ),
+                    'required' => array('action'),
+                ),
+            ),
         ), array('operations'));
     }
 

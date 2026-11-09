@@ -35,6 +35,8 @@ final class Package implements AbilityPackage
             $this->abilityName('plugin-activate'),
             $this->abilityName('plugin-deactivate'),
             $this->abilityName('plugin-delete'),
+            $this->abilityName('plugin-update'),
+            $this->abilityName('plugin-restore'),
             $this->abilityName('plugins-list'),
             $this->abilityName('plugin-info'),
             $this->abilityName('plugin-export'),
@@ -65,6 +67,8 @@ final class Package implements AbilityPackage
         $activateAbility = $this->abilityName('plugin-activate');
         $deactivateAbility = $this->abilityName('plugin-deactivate');
         $deleteAbility = $this->abilityName('plugin-delete');
+        $updateAbility = $this->abilityName('plugin-update');
+        $restoreAbility = $this->abilityName('plugin-restore');
         $pluginsListAbility = $this->abilityName('plugins-list');
         $pluginInfoAbility = $this->abilityName('plugin-info');
         $exportAbility = $this->abilityName('plugin-export');
@@ -76,7 +80,7 @@ final class Package implements AbilityPackage
             $uploadAbility,
             [
                 'label'               => 'Create plugin upload',
-                'description' => 'Create a one-time PUT URL for a plugin ZIP; stream bytes directly, then call plugin-install. Select entire replacement or one folder via replace/folder.',
+                'description' => 'Stage a plugin ZIP by one-time PUT, then call plugin-install. replace selects the whole package, one folder, or one existing file.',
                 'category'            => $category,
                 'input_schema'        => $this->uploadInputSchema(),
                 'output_schema'       => $this->uploadOutputSchema(),
@@ -90,7 +94,7 @@ final class Package implements AbilityPackage
             $installAbility,
             [
                 'label'               => 'Install uploaded plugin',
-                'description' => 'Install an uploaded ZIP with its bound entire/folder selection. Activate separately with plugin-activate.',
+                'description' => 'Install an uploaded ZIP with its bound entire/folder/file selection. Activate separately with plugin-activate.',
                 'category'            => $category,
                 'input_schema'        => [
                     'type'       => 'object',
@@ -115,8 +119,12 @@ final class Package implements AbilityPackage
                         'version'        => ['type' => 'string'],
                         'active'         => ['type' => 'boolean'],
                         'network_active' => ['type' => 'boolean'],
-                        'replace' => ['type' => 'string', 'enum' => ['entire', 'folder']],
+                        'replace' => ['type' => 'string', 'enum' => ['entire', 'folder', 'file']],
                         'folder' => ['type' => 'string'],
+                        'file' => ['type' => 'string'],
+                        'recovery_id' => ['type' => 'string'],
+                        'recovery_expires_at' => ['type' => 'string'],
+                        'recovery_scope' => ['type' => 'string', 'enum' => ['code']],
                     ],
                     'required' => ['action', 'plugin_slug', 'plugin_file', 'name', 'version', 'active', 'network_active'],
                 ],
@@ -224,8 +232,11 @@ final class Package implements AbilityPackage
                     'properties' => [
                         'plugin_file' => ['type' => 'string'],
                         'deleted' => ['type' => 'boolean'],
+                        'recovery_id' => ['type' => 'string'],
+                        'recovery_expires_at' => ['type' => 'string'],
+                        'recovery_scope' => ['type' => 'string', 'enum' => ['code']],
                     ],
-                    'required' => ['plugin_file', 'deleted'],
+                    'required' => ['plugin_file', 'deleted', 'recovery_id', 'recovery_expires_at', 'recovery_scope'],
                 ],
                 'execute_callback' => [$this, 'delete'],
                 'permission_callback' => [$this, 'canDeletePlugins'],
@@ -234,10 +245,75 @@ final class Package implements AbilityPackage
         );
 
         wp_register_ability(
+            $updateAbility,
+            [
+                'label' => 'Update plugin from WordPress metadata',
+                'description' => 'Install the exact plugin update currently advertised by WordPress. Creates a code recovery point and verifies active sites.',
+                'category' => $category,
+                'input_schema' => [
+                    'type' => 'object',
+                    'additionalProperties' => false,
+                    'properties' => [
+                        'plugin_file' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255],
+                    ],
+                    'required' => ['plugin_file'],
+                ],
+                'output_schema' => [
+                    'type' => 'object',
+                    'additionalProperties' => false,
+                    'properties' => [
+                        'action' => ['type' => 'string', 'enum' => ['updated']],
+                        'plugin_file' => ['type' => 'string'],
+                        'version' => ['type' => 'string'],
+                        'recovery_id' => ['type' => 'string'],
+                        'recovery_expires_at' => ['type' => 'string'],
+                        'recovery_scope' => ['type' => 'string', 'enum' => ['code']],
+                    ],
+                    'required' => ['action', 'plugin_file', 'version', 'recovery_id', 'recovery_expires_at', 'recovery_scope'],
+                ],
+                'execute_callback' => [$this, 'update'],
+                'permission_callback' => [$this, 'canInstallPlugins'],
+                'meta' => $this->abilityMeta(true, false),
+            ]
+        );
+
+        wp_register_ability(
+            $restoreAbility,
+            [
+                'label' => 'Restore plugin code recovery point',
+                'description' => 'Restore a Codi plugin code recovery point only if current source still matches the recorded post-change fingerprint. Does not restore database state.',
+                'category' => $category,
+                'input_schema' => [
+                    'type' => 'object',
+                    'additionalProperties' => false,
+                    'properties' => [
+                        'recovery_id' => ['type' => 'string', 'minLength' => 32, 'maxLength' => 32, 'pattern' => '^[a-f0-9]{32}$'],
+                    ],
+                    'required' => ['recovery_id'],
+                ],
+                'output_schema' => [
+                    'type' => 'object',
+                    'additionalProperties' => false,
+                    'properties' => [
+                        'plugin_file' => ['type' => 'string'],
+                        'version' => ['type' => 'string'],
+                        'restored' => ['type' => 'boolean'],
+                        'recovery_id' => ['type' => 'string'],
+                        'recovery_scope' => ['type' => 'string', 'enum' => ['code']],
+                    ],
+                    'required' => ['plugin_file', 'version', 'restored', 'recovery_id', 'recovery_scope'],
+                ],
+                'execute_callback' => [$this, 'restore'],
+                'permission_callback' => [$this, 'canInstallPlugins'],
+                'meta' => $this->abilityMeta(true, false),
+            ]
+        );
+
+        wp_register_ability(
             $pluginsListAbility,
             [
                 'label' => 'List installed plugins',
-                'description' => 'List installed WordPress plugins with versions, activation scope, requirements, and cached update availability.',
+                'description' => 'List installed plugins compactly by default; detail=full returns requirements, metadata, and recovery details.',
                 'category' => $category,
                 'input_schema' => PluginInspection::listInputSchema(),
                 'output_schema' => PluginInspection::listOutputSchema(),
@@ -265,7 +341,7 @@ final class Package implements AbilityPackage
             $exportAbility,
             [
                 'label' => 'Export installed plugin ZIP',
-                'description' => 'Export a directory-backed plugin ZIP via HTTPS download. Refuses Codi MCP; transfer=chunks explicitly selects sequential base64 reads.',
+                'description' => 'Export a directory-backed plugin ZIP by HTTPS; chunks enables sequential base64 transfer. Codi MCP itself cannot be exported.',
                 'category' => $category,
                 'input_schema' => [
                     'type' => 'object',
@@ -330,6 +406,16 @@ final class Package implements AbilityPackage
     public function delete($input)
     {
         return $this->deployment()->delete($input);
+    }
+
+    public function update($input)
+    {
+        return $this->deployment()->update($input);
+    }
+
+    public function restore($input)
+    {
+        return $this->deployment()->restore($input);
     }
 
     public function canInstallPlugins(): bool
@@ -397,8 +483,9 @@ final class Package implements AbilityPackage
             'additionalProperties' => false,
             'properties' => [
                 'upload_id' => ['type' => 'string'],
-                'replace' => ['type' => 'string', 'enum' => ['entire', 'folder']],
+                'replace' => ['type' => 'string', 'enum' => ['entire', 'folder', 'file']],
                 'folder' => ['type' => 'string'],
+                'file' => ['type' => 'string'],
                 'complete' => ['type' => 'boolean'],
                 'upload' => [
                     'type' => 'object',

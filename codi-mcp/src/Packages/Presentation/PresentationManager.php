@@ -64,18 +64,31 @@ final class PresentationManager
         if (!$this->repository->canInspectSnapshot($snapshot)) {
             throw new \RuntimeException('You do not have permission to inspect this Presentation target.');
         }
-        $blocks = 'global_styles' === (string) ($snapshot['kind'] ?? '')
-            ? array()
-            : $this->blocks->summarize((string) ($snapshot['content'] ?? ''));
-        return array(
+
+        $detail = strtolower(trim((string) ($input['detail'] ?? 'blocks')));
+        if (!in_array($detail, array('blocks', 'raw', 'full'), true)) {
+            $detail = 'blocks';
+        }
+        $kind = (string) ($snapshot['kind'] ?? '');
+        $result = array(
             'surface' => $this->repository->surfaceFromSnapshot($snapshot, false),
-            'content' => (string) ($snapshot['content'] ?? ''),
             'template' => (string) ($snapshot['template'] ?? ''),
             'global_styles' => is_array($snapshot['global_styles'] ?? null) ? $snapshot['global_styles'] : array(),
             'sync_status' => (string) ($snapshot['sync_status'] ?? ''),
-            'blocks' => $blocks,
-            'dependencies' => $this->dependenciesForBlocks($blocks),
         );
+
+        if ($detail === 'raw' || $detail === 'full') {
+            $result['content'] = (string) ($snapshot['content'] ?? '');
+        }
+        if ($detail === 'blocks' || $detail === 'full') {
+            $blocks = $kind === 'global_styles'
+                ? array()
+                : $this->blocks->summarize((string) ($snapshot['content'] ?? ''));
+            $result['blocks'] = $blocks;
+            $result['dependencies'] = $this->dependenciesForBlocks($blocks);
+        }
+
+        return $result;
     }
 
     /** @param array<string,mixed> $input @return array<string,mixed> */
