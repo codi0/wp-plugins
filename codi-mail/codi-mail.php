@@ -115,7 +115,7 @@ function codi_mail_default_from($atts) {
 		}
 	}
 
-	$from = 'From: ' . $opts['from'];
+	$from = 'From: ' . get_bloginfo('name') . ' <' . $opts['from'] . '>';
 
 	if(is_array($headers)) {
 		$headers[] = $from;

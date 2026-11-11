@@ -113,7 +113,13 @@ namespace {
 	];
 
 	function get_bloginfo($key) {
-		return $key === 'admin_email' ? 'sender@example.test' : '';
+		if($key === 'admin_email') {
+			return 'sender@example.test';
+		}
+		if($key === 'name') {
+			return 'Example Site';
+		}
+		return '';
 	}
 
 	function sanitize_key($value) {
@@ -182,6 +188,22 @@ namespace {
 	}
 
 	require dirname(__DIR__) . '/codi-mail.php';
+
+	$defaultFrom = codi_mail_default_from([
+		'headers' => [],
+	]);
+	codi_mail_test_assert(
+		$defaultFrom['headers'] === [ 'From: Example Site <sender@example.test>' ],
+		'Default From must combine the site name with the configured sender address.'
+	);
+
+	$explicitFrom = codi_mail_default_from([
+		'headers' => [ 'From: Custom Sender <custom@example.test>' ],
+	]);
+	codi_mail_test_assert(
+		$explicitFrom['headers'] === [ 'From: Custom Sender <custom@example.test>' ],
+		'Explicit From headers must remain untouched.'
+	);
 
 	$plainMail = codi_mail_html_content_type([
 		'message' => 'Plain text only.',
