@@ -34,14 +34,6 @@ function codi_mail_admin_fields(array $opts) {
 	return $html;
 }
 
-function codi_mail_admin_test_headers($message) {
-	$message = (string)$message;
-
-	return wp_strip_all_tags($message) !== $message
-		? [ 'Content-Type: text/html; charset=UTF-8' ]
-		: [];
-}
-
 function codi_mail_admin_options() {
 	if(!current_user_can('manage_options')) {
 		wp_die(esc_html__('You do not have permission to manage these settings.'));
@@ -115,8 +107,7 @@ function codi_mail_admin_options() {
 		add_action('wp_mail_failed', $error_listener, 9999);
 
 		try {
-			$headers = codi_mail_admin_test_headers($test['message']);
-			$test['result'] = wp_mail($test['to'], $test['subject'], $test['message'], $headers, $attachments);
+			$test['result'] = wp_mail($test['to'], $test['subject'], $test['message'], [], $attachments);
 		} catch(Throwable $e) {
 			$test['result'] = false;
 			$mail_error = $e->getMessage();

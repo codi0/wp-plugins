@@ -101,8 +101,6 @@ namespace PHPMailer\PHPMailer {
 namespace {
 	define('ABSPATH', dirname(__DIR__) . '/');
 	define('WPINC', 'wp-includes');
-	define('CODI_MAIL_PLUGIN_FILE', dirname(__DIR__) . '/codi-mail.php');
-	define('CODI_MAIL_PLUGIN_NAME', 'codi-mail');
 
 	$GLOBALS['codi_mail_test_opts'] = [
 		'type' => 'smtp',
@@ -114,8 +112,39 @@ namespace {
 		'from' => 'sender@example.test',
 	];
 
-	function codi_mail_opts() {
-		return $GLOBALS['codi_mail_test_opts'];
+	function get_bloginfo($key) {
+		return $key === 'admin_email' ? 'sender@example.test' : '';
+	}
+
+	function sanitize_key($value) {
+		return strtolower(preg_replace('/[^a-z0-9_\-]/i', '', (string)$value));
+	}
+
+	function sanitize_text_field($value) {
+		return (string)$value;
+	}
+
+	function absint($value) {
+		return abs((int)$value);
+	}
+
+	function sanitize_email($value) {
+		return (string)$value;
+	}
+
+	function get_option($name, $default = false) {
+		return $name === 'codi_mail_opts' ? $GLOBALS['codi_mail_test_opts'] : $default;
+	}
+
+	function update_option($name, $value) {
+		if($name === 'codi_mail_opts') {
+			$GLOBALS['codi_mail_test_opts'] = $value;
+		}
+		return true;
+	}
+
+	function is_admin() {
+		return false;
 	}
 
 	function is_email($email) {
@@ -151,6 +180,44 @@ namespace {
 			exit(1);
 		}
 	}
+
+	require dirname(__DIR__) . '/codi-mail.php';
+
+	$plainMail = codi_mail_html_content_type([
+		'message' => 'Plain text only.',
+		'headers' => [],
+	]);
+	codi_mail_test_assert(
+		$plainMail['headers'] === [],
+		'Plain-text messages must keep their existing content type.'
+	);
+
+	$htmlMail = codi_mail_html_content_type([
+		'message' => '<p>HTML message</p>',
+		'headers' => [],
+	]);
+	codi_mail_test_assert(
+		$htmlMail['headers'] === [ 'Content-Type: text/html; charset=UTF-8' ],
+		'HTML messages without a content type must be marked as text/html.'
+	);
+
+	$explicitContentType = codi_mail_html_content_type([
+		'message' => '<p>HTML message</p>',
+		'headers' => [ 'Content-Type: text/plain; charset=UTF-8' ],
+	]);
+	codi_mail_test_assert(
+		$explicitContentType['headers'] === [ 'Content-Type: text/plain; charset=UTF-8' ],
+		'Explicit content type headers must bypass HTML auto-detection.'
+	);
+
+	$stringHeaders = codi_mail_html_content_type([
+		'message' => '<strong>HTML message</strong>',
+		'headers' => 'X-Test: value',
+	]);
+	codi_mail_test_assert(
+		$stringHeaders['headers'] === "X-Test: value\r\nContent-Type: text/html; charset=UTF-8",
+		'HTML content type detection must preserve string header format.'
+	);
 
 	require dirname(__DIR__) . '/driver/smtp.php';
 
@@ -232,17 +299,6 @@ namespace {
 	codi_mail_test_assert(
 		$sesMailer->seenMailer === 'smtp' && $sesMailer->Mailer === 'codiSes',
 		'SES must build SMTP-style MIME and restore its custom transport.'
-	);
-
-	require dirname(__DIR__) . '/admin.php';
-
-	codi_mail_test_assert(
-		codi_mail_admin_test_headers('Plain text only.') === [],
-		'Admin test must keep plain-text messages as text/plain.'
-	);
-	codi_mail_test_assert(
-		codi_mail_admin_test_headers('<p>HTML message</p>') === [ 'Content-Type: text/html; charset=UTF-8' ],
-		'Admin test must mark messages containing HTML tags as text/html.'
 	);
 
 	echo "PASS\n";

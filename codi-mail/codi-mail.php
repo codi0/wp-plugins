@@ -129,6 +129,37 @@ function codi_mail_default_from($atts) {
 	return $atts;
 }
 
+function codi_mail_html_content_type($atts) {
+	$headers = $atts['headers'] ?? [];
+	$lines = is_array($headers)
+		? $headers
+		: explode("\n", str_replace("\r\n", "\n", (string)$headers));
+
+	foreach($lines as $header) {
+		if(is_scalar($header) && preg_match('/^\\s*content-type\\s*:/i', (string)$header)) {
+			return $atts;
+		}
+	}
+
+	$message = isset($atts['message']) ? (string)$atts['message'] : '';
+	if(wp_strip_all_tags($message) === $message) {
+		return $atts;
+	}
+
+	$contentType = 'Content-Type: text/html; charset=UTF-8';
+
+	if(is_array($headers)) {
+		$headers[] = $contentType;
+	} elseif(trim((string)$headers) === '') {
+		$headers = $contentType;
+	} else {
+		$headers = rtrim((string)$headers, "\r\n") . "\r\n" . $contentType;
+	}
+
+	$atts['headers'] = $headers;
+	return $atts;
+}
+
 function codi_mail_load_driver($driver = null) {
 	$opts = codi_mail_opts();
 	$driver = $driver ?: $opts['type'];
@@ -144,6 +175,7 @@ function codi_mail_load_driver($driver = null) {
 }
 
 add_filter('wp_mail', 'codi_mail_default_from', PHP_INT_MAX);
+add_filter('wp_mail', 'codi_mail_html_content_type', PHP_INT_MAX);
 add_action('plugins_loaded', 'codi_mail_load_driver', -9999);
 
 if(is_admin()) {
