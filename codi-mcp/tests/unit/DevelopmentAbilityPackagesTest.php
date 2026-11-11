@@ -179,6 +179,16 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         $this->assertSame(array('PUT'), array_values((array) ($themeTransfer['method']['enum'] ?? array())));
         $this->assertArrayHasKey('url', $themeTransfer);
 
+        foreach (array('codi/plugin-export', 'codi/theme-export') as $exportAbilityName) {
+            $exportAbility = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$exportAbilityName] ?? array());
+            $exportInput = (array) ($exportAbility['input_schema']['properties'] ?? array());
+            $this->assertTrue(str_contains(strtolower((string) ($exportAbility['description'] ?? '')), 'renew'));
+            $this->assertTrue(str_contains(strtolower((string) ($exportInput['download_id']['description'] ?? '')), 'renew'));
+            $this->assertTrue(str_contains(strtolower((string) ($exportInput['transfer']['description'] ?? '')), 'five minutes'));
+            $exportOutput = (array) ($exportAbility['output_schema']['oneOf'][0]['properties'] ?? array());
+            $this->assertTrue(str_contains(strtolower((string) ($exportOutput['download_id']['description'] ?? '')), 'renew'));
+        }
+
         $mediaUpload = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/media-upload'] ?? array());
         $mediaInput = (array) ($mediaUpload['input_schema']['properties'] ?? array());
         $this->assertSame(array('filename', 'mime_type', 'size', 'sha256'), array_keys($mediaInput));

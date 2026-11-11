@@ -341,14 +341,20 @@ final class Package implements AbilityPackage
             $exportAbility,
             [
                 'label' => 'Export installed plugin ZIP',
-                'description' => 'Export a directory-backed plugin ZIP by HTTPS; chunks enables sequential base64 transfer. Codi MCP itself cannot be exported.',
+                'description' => 'Export a directory-backed plugin ZIP. Signed HTTPS URLs last five minutes and can be renewed with download_id for up to one hour; chunks enables sequential base64 transfer. Codi MCP itself cannot be exported.',
                 'category' => $category,
                 'input_schema' => [
                     'type' => 'object',
                     'additionalProperties' => false,
                     'properties' => [
                         'plugin_file' => ['type' => 'string', 'minLength' => 1, 'maxLength' => 255],
-                        'download_id' => ['type' => 'string', 'minLength' => 32, 'maxLength' => 32, 'pattern' => '^[a-f0-9]{32}$'],
+                        'download_id' => [
+                            'type' => 'string',
+                            'minLength' => 32,
+                            'maxLength' => 32,
+                            'pattern' => '^[a-f0-9]{32}$',
+                            'description' => 'Reuse a prior export snapshot to renew its signed URL or continue it in chunk mode; snapshots remain available for up to one hour.',
+                        ],
                         'offset' => ['type' => 'integer', 'minimum' => 0],
                         'transfer' => DownloadCapabilityService::transferSchema(),
                     ],

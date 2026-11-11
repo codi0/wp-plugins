@@ -141,10 +141,17 @@ final class Package implements AbilityPackage
         $this->registerMutation(
             'theme-export',
             'Export installed theme ZIP',
-            'Export a theme ZIP by HTTPS; block themes include saved templates and Global Styles. chunks enables sequential base64 transfer.',
+            'Export a theme ZIP. Signed HTTPS URLs last five minutes and can be renewed with download_id for up to one hour; block themes include saved templates and Global Styles, and chunks enables sequential base64 transfer.',
             array(
                 'type' => 'object', 'additionalProperties' => false,
-                'properties' => array('stylesheet' => ThemeInspection::stylesheetSchema(), 'download_id' => $this->idSchema(), 'offset' => array('type' => 'integer', 'minimum' => 0), 'transfer' => DownloadCapabilityService::transferSchema()),
+                'properties' => array(
+                    'stylesheet' => ThemeInspection::stylesheetSchema(),
+                    'download_id' => array_merge($this->idSchema(), array(
+                        'description' => 'Reuse a prior export snapshot to renew its signed URL or continue it in chunk mode; snapshots remain available for up to one hour.',
+                    )),
+                    'offset' => array('type' => 'integer', 'minimum' => 0),
+                    'transfer' => DownloadCapabilityService::transferSchema(),
+                ),
                 'required' => array('stylesheet'),
             ),
             DownloadCapabilityService::outputSchema('stylesheet'),

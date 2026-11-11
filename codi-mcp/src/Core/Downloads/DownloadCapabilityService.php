@@ -54,14 +54,18 @@ final class DownloadCapabilityService
     {
         return [
             'type' => 'string', 'enum' => ['url', 'chunks'],
-            'description' => 'Default url; chunks returns sequential base64 data with next_offset.',
+            'description' => 'Default url returns a signed HTTPS URL valid for five minutes. Reuse download_id to renew the URL while the staged snapshot remains available for up to one hour; chunks returns sequential base64 data with next_offset.',
         ];
     }
 
     public static function outputSchema(string $identityField): array
     {
         $properties = [
-            'download_id' => ['type' => 'string'], $identityField => ['type' => 'string'], 'filename' => ['type' => 'string'],
+            'download_id' => [
+                'type' => 'string',
+                'description' => 'Reusable staged-snapshot ID. Use it to renew an expired signed URL for up to one hour after the export was created.',
+            ],
+            $identityField => ['type' => 'string'], 'filename' => ['type' => 'string'],
             'size' => ['type' => 'integer'], 'sha256' => ['type' => 'string'],
         ];
         $object = static fn (array $fields): array => ['type' => 'object', 'additionalProperties' => false, 'properties' => $fields, 'required' => array_keys($fields)];
