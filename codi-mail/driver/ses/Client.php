@@ -26,7 +26,7 @@ class Client {
 		return $this->host;
 	}
 
-	public function sendRawEmail($rawMessage, array $destination = [], $fromEmail = null) {
+	public function sendRawEmail($rawMessage, array $destination = []) {
 		$payload = [
 			'Content' => [
 				'Raw' => [
@@ -41,10 +41,6 @@ class Client {
 
 		if($destination) {
 			$payload['Destination'] = $destination;
-		}
-
-		if($fromEmail !== null && $fromEmail !== '') {
-			$payload['FromEmailAddress'] = (string)$fromEmail;
 		}
 
 		$request = $this->getRequest('POST');

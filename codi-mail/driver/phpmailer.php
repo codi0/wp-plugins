@@ -10,9 +10,25 @@ if(!class_exists('PHPMailer\\PHPMailer\\PHPMailer')) {
 
 class Codi_Mail_PHPMailer extends PHPMailer\PHPMailer\PHPMailer {
 	private $codiFileError = '';
+	private $codiTransportResult = [];
 
 	public function codiResetSendState() {
 		$this->codiFileError = '';
+		$this->codiTransportResult = [];
+	}
+
+	public function codiSetTransportResult($provider, $providerMessageId = '', $messageId = null) {
+		$this->codiTransportResult = [
+			'provider' => (string)$provider,
+			'provider_message_id' => (string)$providerMessageId,
+		];
+		if($messageId !== null) {
+			$this->codiTransportResult['message_id'] = (string)$messageId;
+		}
+	}
+
+	public function codiTransportResult() {
+		return $this->codiTransportResult;
 	}
 
 	public function addAttachment(
@@ -59,7 +75,12 @@ class Codi_Mail_PHPMailer extends PHPMailer\PHPMailer\PHPMailer {
 			codi_mail_smtp_before_send($this);
 		}
 
-		return parent::smtpSend($header, $body);
+		$result = parent::smtpSend($header, $body);
+		if($result) {
+			$this->codiSetTransportResult('smtp');
+		}
+
+		return $result;
 	}
 
 	public function preSend() {

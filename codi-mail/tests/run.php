@@ -29,9 +29,11 @@ namespace PHPMailer\PHPMailer {
 		public $AuthType = '';
 		public $Timeout = 300;
 		public $From = 'sender@example.test';
+		public $MessageID = '<mime@example.test>';
 		public $seenMailer = '';
 		public $lastConnectedHost = '';
 		public $closeCount = 0;
+		public $customHeaders = [];
 		protected $smtp;
 
 		public function __construct($exceptions = null) {
@@ -84,6 +86,14 @@ namespace PHPMailer\PHPMailer {
 			return 'MIME';
 		}
 
+		public function getLastMessageID() {
+			return $this->MessageID;
+		}
+
+		public function getCustomHeaders() {
+			return $this->customHeaders;
+		}
+
 		public function getToAddresses() {
 			return [ [ 'to@example.test', '' ] ];
 		}
@@ -111,6 +121,9 @@ namespace {
 		'password' => 'secret',
 		'from' => 'sender@example.test',
 	];
+	$GLOBALS['codi_mail_test_options'] = [];
+	$GLOBALS['codi_mail_test_actions'] = [];
+	$GLOBALS['codi_mail_test_scheduled'] = [];
 
 	function get_bloginfo($key) {
 		if($key === 'admin_email') {
@@ -138,14 +151,32 @@ namespace {
 		return (string)$value;
 	}
 
-	function get_option($name, $default = false) {
-		return $name === 'codi_mail_opts' ? $GLOBALS['codi_mail_test_opts'] : $default;
+	function wp_generate_uuid4() {
+		static $counter = 0;
+		$counter++;
+		return sprintf('00000000-0000-4000-8000-%012d', $counter);
 	}
 
-	function update_option($name, $value) {
+	function get_option($name, $default = false) {
+		if($name === 'codi_mail_opts') {
+			return $GLOBALS['codi_mail_test_opts'];
+		}
+		return array_key_exists($name, $GLOBALS['codi_mail_test_options'])
+			? $GLOBALS['codi_mail_test_options'][$name]
+			: $default;
+	}
+
+	function update_option($name, $value, $autoload = null) {
 		if($name === 'codi_mail_opts') {
 			$GLOBALS['codi_mail_test_opts'] = $value;
+		} else {
+			$GLOBALS['codi_mail_test_options'][$name] = $value;
 		}
+		return true;
+	}
+
+	function delete_option($name) {
+		unset($GLOBALS['codi_mail_test_options'][$name]);
 		return true;
 	}
 
@@ -171,13 +202,37 @@ namespace {
 
 	function add_filter($tag, $callback, $priority = 10, $accepted_args = 1) {}
 	function add_action($tag, $callback, $priority = 10, $accepted_args = 1) {}
-	function do_action($tag) {}
+	function do_action($tag, ...$args) {
+		$GLOBALS['codi_mail_test_actions'][] = [ $tag, $args ];
+	}
+	function register_activation_hook($file, $callback) {}
+	function register_deactivation_hook($file, $callback) {}
+	function wp_next_scheduled($hook) {
+		return $GLOBALS['codi_mail_test_scheduled'][$hook] ?? false;
+	}
+	function wp_schedule_event($timestamp, $recurrence, $hook) {
+		$GLOBALS['codi_mail_test_scheduled'][$hook] = $timestamp;
+		return true;
+	}
+	function wp_unschedule_event($timestamp, $hook) {
+		unset($GLOBALS['codi_mail_test_scheduled'][$hook]);
+		return true;
+	}
+	function current_time($type, $gmt = false) {
+		return gmdate('Y-m-d H:i:s');
+	}
 	function is_wp_error($value) {
 		return $value instanceof WP_Error;
 	}
 
 	class WP_Error {
-		public function __construct($code = '', $message = '', $data = null) {}
+		private $message;
+		public function __construct($code = '', $message = '', $data = null) {
+			$this->message = (string)$message;
+		}
+		public function get_error_message() {
+			return $this->message;
+		}
 	}
 
 	function codi_mail_test_assert($condition, $message) {
@@ -194,7 +249,23 @@ namespace {
 	]);
 	codi_mail_test_assert(
 		$defaultFrom['headers'] === [ 'From: Example Site <sender@example.test>' ],
-		'Default From must combine the site name with the configured sender address.'
+		'Default admin From must combine the site name with the admin email.'
+	);
+
+	$explicitAdminFrom = codi_mail_default_from([
+		'headers' => [ 'From: sender@example.test' ],
+	]);
+	codi_mail_test_assert(
+		$explicitAdminFrom['headers'] === [ 'From: Example Site <sender@example.test>' ],
+		'Explicit admin From address must receive the site name.'
+	);
+
+	$namedAdminFrom = codi_mail_default_from([
+		'headers' => [ 'From: WordPress <sender@example.test>' ],
+	]);
+	codi_mail_test_assert(
+		$namedAdminFrom['headers'] === [ 'From: Example Site <sender@example.test>' ],
+		'Admin From address must use the site name even when another name was supplied.'
 	);
 
 	$explicitFrom = codi_mail_default_from([
@@ -204,6 +275,16 @@ namespace {
 		$explicitFrom['headers'] === [ 'From: Custom Sender <custom@example.test>' ],
 		'Explicit From headers must remain untouched.'
 	);
+
+	$GLOBALS['codi_mail_test_opts']['from'] = 'custom@example.test';
+	$customDefaultFrom = codi_mail_default_from([
+		'headers' => [],
+	]);
+	codi_mail_test_assert(
+		$customDefaultFrom['headers'] === [ 'From: custom@example.test' ],
+		'Configured custom default From must remain custom and must not inherit the site name.'
+	);
+	$GLOBALS['codi_mail_test_opts']['from'] = 'sender@example.test';
 
 	$plainMail = codi_mail_html_content_type([
 		'message' => 'Plain text only.',
@@ -274,6 +355,25 @@ namespace {
 		'Connected SMTP socket must be replaced when final send-time identity changes.'
 	);
 
+	$GLOBALS['codi_mail_test_actions'] = [];
+	$phpmailer->customHeaders = [ [ 'X-Application-Correlation', 'opaque-value' ] ];
+	codi_mail_emit_sent([
+		'to' => [ 'to@example.test' ],
+		'headers' => [],
+	]);
+	$sentEvents = array_values(array_filter($GLOBALS['codi_mail_test_actions'], function($event) {
+		return $event[0] === 'codi_mail/sent';
+	}));
+	codi_mail_test_assert(count($sentEvents) === 1, 'Successful Codi transport must emit one generic sent event.');
+	$sent = $sentEvents[0][1][0];
+	codi_mail_test_assert(
+		$sent['provider'] === 'smtp'
+		&& $sent['message_id'] === '<mime@example.test>'
+		&& $sent['headers'] === [ 'X-Application-Correlation: opaque-value' ]
+		&& !array_key_exists('message', $sent),
+		'Sent event must expose transport identity and actual PHPMailer custom headers without duplicating message content.'
+	);
+
 	try {
 		$phpmailer->addAttachment('bad-attachment');
 	} catch(\PHPMailer\PHPMailer\Exception $e) {
@@ -315,12 +415,167 @@ namespace {
 		'SES HTTP classes must load together on demand.'
 	);
 
+	$capturingRequest = new class extends \CodiMail\Ses\Request {
+		public $payload = null;
+		public $path = '';
+		public function setPath($path) {
+			$this->path = (string)$path;
+			return $this;
+		}
+		public function setJsonPayload($payload) {
+			$this->payload = $payload;
+			return $this;
+		}
+		public function getResponse() {
+			return (object)[
+				'error' => false,
+				'body' => (object)[ 'MessageId' => 'raw-message-id' ],
+				'request_id' => 'request-id',
+			];
+		}
+	};
+	$rawClient = new \CodiMail\Ses\Client('access-key', 'secret-key', 'email.eu-west-2.amazonaws.com');
+	$rawClient->setRequest($capturingRequest);
+	$rawMessage = "From: Example Site <sender@example.test>\r\nTo: to@example.test\r\nSubject: Raw test\r\n\r\nBody";
+	$rawResult = $rawClient->sendRawEmail($rawMessage, [ 'ToAddresses' => [ 'to@example.test' ] ]);
+	codi_mail_test_assert(
+		$rawResult['MessageId'] === 'raw-message-id'
+		&& $capturingRequest->path === '/v2/email/outbound-emails'
+		&& !array_key_exists('FromEmailAddress', $capturingRequest->payload)
+		&& base64_decode($capturingRequest->payload['Content']['Raw']['Data']) === $rawMessage,
+		'SES raw send must preserve the MIME From header and must not override it with a bare FromEmailAddress.'
+	);
+
 	$sesMailer = new Codi_Mail_SES_PHPMailer(true);
 	$sesMailer->Mailer = 'codiSes';
 	codi_mail_test_assert($sesMailer->preSend() === true, 'SES MIME pre-send must succeed.');
 	codi_mail_test_assert(
 		$sesMailer->seenMailer === 'smtp' && $sesMailer->Mailer === 'codiSes',
 		'SES must build SMTP-style MIME and restore its custom transport.'
+	);
+
+	$sesMailer->codiSetTransportResult('ses', 'provider-id', '');
+	$sesTransport = $sesMailer->codiTransportResult();
+	codi_mail_test_assert(
+		isset($sesTransport['provider_message_id'])
+		&& $sesTransport['provider_message_id'] === 'provider-id'
+		&& array_key_exists('message_id', $sesTransport)
+		&& $sesTransport['message_id'] === '',
+		'SES transport must mark the pre-send PHPMailer Message-ID as unusable after provider overwrite.'
+	);
+
+	$GLOBALS['phpmailer'] = $sesMailer;
+	$GLOBALS['codi_mail_test_actions'] = [];
+	codi_mail_emit_sent([
+		'to' => [ 'to@example.test' ],
+		'headers' => [],
+	]);
+	$sesSentEvents = array_values(array_filter($GLOBALS['codi_mail_test_actions'], function($event) {
+		return $event[0] === 'codi_mail/sent';
+	}));
+	codi_mail_test_assert(
+		count($sesSentEvents) === 1
+		&& $sesSentEvents[0][1][0]['message_id'] === ''
+		&& $sesSentEvents[0][1][0]['provider_message_id'] === 'provider-id',
+		'SES sent event must retain provider identity while refusing the overwritten PHPMailer Message-ID.'
+	);
+	$GLOBALS['phpmailer'] = $phpmailer;
+
+	require dirname(__DIR__) . '/inbound/graph.php';
+
+	$threadHeaders = codi_mail_graph_headers([
+		[ 'name' => 'In-Reply-To', 'value' => '<parent@example.test>' ],
+		[ 'name' => 'References', 'value' => '<root@example.test> <parent@example.test>' ],
+	]);
+	codi_mail_test_assert(
+		codi_mail_graph_header_first($threadHeaders, 'in-reply-to') === '<parent@example.test>'
+		&& codi_mail_graph_message_ids(codi_mail_graph_header_first($threadHeaders, 'references')) === [ '<root@example.test>', '<parent@example.test>' ],
+		'Thread identifiers must survive Graph normalisation exactly and in order.'
+	);
+
+	codi_mail_test_assert(
+		codi_mail_graph_classification([ 'auto-submitted' => [ 'auto-replied' ] ], 'person@example.test', 'Re: Hello') === 'auto_reply'
+		&& codi_mail_graph_classification([ 'return-path' => [ '<>' ] ], 'mailer-daemon@example.test', 'Delivery failed') === 'bounce'
+		&& codi_mail_graph_classification([], 'person@example.test', 'Re: Hello') === 'normal',
+		'Inbound classification must separate human replies from automatic replies and bounces.'
+	);
+
+	$accounts = codi_mail_inbound_accounts([
+		'accountone' => [
+			'label' => 'First mailbox',
+			'enabled' => true,
+			'provider' => 'graph',
+			'tenant_id' => 'tenant-a',
+			'client_id' => 'client-a',
+			'client_secret' => 'secret-a',
+			'mailbox' => 'FIRST@EXAMPLE.TEST',
+			'page_size' => 25,
+		],
+		'accounttwo' => [
+			'label' => 'Second mailbox',
+			'enabled' => true,
+			'provider' => 'graph',
+			'tenant_id' => 'tenant-b',
+			'client_id' => 'client-b',
+			'client_secret' => 'secret-b',
+			'mailbox' => 'second@example.test',
+			'page_size' => 50,
+		],
+	]);
+	codi_mail_test_assert(
+		count($accounts) === 2
+		&& $accounts['accountone']['mailbox'] === 'first@example.test'
+		&& $accounts['accounttwo']['mailbox'] === 'second@example.test',
+		'Inbound account configuration must support multiple independently addressed mailboxes.'
+	);
+	$preserved = codi_mail_inbound_sanitize_account([
+		'client_secret' => '',
+		'mailbox' => 'first@example.test',
+	], $accounts['accountone'], 'accountone');
+	codi_mail_test_assert(
+		$preserved['client_secret'] === 'secret-a',
+		'Blank inbound secrets must retain the existing account credential.'
+	);
+
+	update_option('codi_mail_graph_delta_accountone', 'stale-cursor', false);
+	codi_mail_inbound_health('accountone', [
+		'last_success_at' => '2026-01-01T00:00:00+00:00',
+		'consecutive_failures' => 2,
+	]);
+	$accounts['accountone']['mailbox'] = 'replacement@example.test';
+	$accounts = codi_mail_inbound_accounts($accounts);
+	codi_mail_test_assert(
+		get_option('codi_mail_graph_delta_accountone', '') === ''
+		&& codi_mail_inbound_health('accountone') === [],
+		'Changing an inbound mailbox must reset provider cursor and health state for that stable account id.'
+	);
+
+	$GLOBALS['codi_mail_test_actions'] = [];
+	$inboundOne = [
+		'inbound_account_id' => 'accountone',
+		'inbound_account_label' => 'First mailbox',
+		'mailbox' => 'FIRST@EXAMPLE.TEST',
+		'provider' => 'graph',
+		'provider_message_id' => 'provider-1',
+		'message_id' => '',
+		'in_reply_to' => '<outbound@example.test>',
+		'references' => [ '<root@example.test>', '<outbound@example.test>' ],
+	];
+	codi_mail_test_assert(codi_mail_inbound_dispatch($inboundOne) === true, 'Valid provider message must be dispatched.');
+
+	$inboundTwo = $inboundOne;
+	$inboundTwo['provider_message_id'] = 'provider-2';
+	codi_mail_test_assert(codi_mail_inbound_dispatch($inboundTwo) === true, 'Missing Internet Message-ID must not collapse distinct provider messages.');
+	$inboundEvents = array_values(array_filter($GLOBALS['codi_mail_test_actions'], function($event) {
+		return $event[0] === 'codi_mail_inbound_message';
+	}));
+	codi_mail_test_assert(count($inboundEvents) === 2, 'Distinct provider messages must each reach consumers.');
+	codi_mail_test_assert(
+		$inboundEvents[0][1][0]['mailbox'] === 'first@example.test'
+		&& $inboundEvents[0][1][0]['inbound_account_id'] === 'accountone'
+		&& $inboundEvents[0][1][0]['in_reply_to'] === '<outbound@example.test>'
+		&& $inboundEvents[0][1][0]['references'] === [ '<root@example.test>', '<outbound@example.test>' ],
+		'Inbound dispatch must preserve exact thread headers.'
 	);
 
 	echo "PASS\n";

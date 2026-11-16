@@ -31,11 +31,11 @@ class Codi_Mail_SES_PHPMailer extends Codi_Mail_PHPMailer {
 
 			$response = codi_mail_ses_service()->sendRawEmail(
 				$this->getSentMIMEMessage(),
-				$destination,
-				$this->From
+				$destination
 			);
 
 			if(is_array($response) && !empty($response['MessageId'])) {
+				$this->codiSetTransportResult('ses', (string)$response['MessageId'], '');
 				return true;
 			}
 
