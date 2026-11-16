@@ -3,12 +3,29 @@
 /*
 Plugin Name: Codi Debug
 Description: Display debug bar that includes load time, memory usage and number of queries
-Version: 1.0.0
+Version: 1.1.3
 Author: codi0
 Author URI: https://github.com/codi-si/wp
 */
 
 defined('ABSPATH') or die;
+
+
+define('CODI_DEBUG_PLUGIN_FILE', __FILE__);
+
+require_once __DIR__ . '/includes/error-monitor.php';
+if(is_admin()) {
+	require_once __DIR__ . '/includes/admin.php';
+}
+
+
+//error monitoring
+add_filter('cron_schedules', 'codi_debug_cron_schedules');
+add_action('init', 'codi_debug_sync_schedules', 20);
+add_action('codi_debug/error_alerts', 'codi_debug_run_alerts');
+add_action('codi_debug/error_summary', 'codi_debug_run_summary');
+register_activation_hook(CODI_DEBUG_PLUGIN_FILE, 'codi_debug_activate');
+register_deactivation_hook(CODI_DEBUG_PLUGIN_FILE, 'codi_debug_deactivate');
 
 
 //define constants
@@ -37,7 +54,7 @@ function codi_debug_bar() {
 		$names = [];
 		$kernel = prototypr();
 		//get kernel
-		foreach($kernel->config('db_services') as $key) {
+		foreach((array) $kernel->config('db_services') as $key) {
 			if($db = $kernel->service($key)) {
 				//get db name
 				$dbname = isset($db->dbname) ? $db->dbname : $db->name;
