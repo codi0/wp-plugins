@@ -100,6 +100,7 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         }
         $this->assertSame(false, $uploadSchema['additionalProperties']);
         $this->assertSame(array('entire', 'folder', 'file'), $uploadProperties['replace']['enum']);
+        $this->assertSame(20 * 1024 * 1024, $uploadProperties['size']['maximum'] ?? null);
         $this->assertSame(array('plugin_slug', 'size', 'sha256'), array_values((array) ($uploadSchema['required'] ?? array())));
         $uploadOutput = (array) ($uploadDescriptor['output_schema'] ?? array());
         $continuation = (array) (($uploadOutput['properties']['continuation'] ?? array()));
@@ -108,6 +109,22 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         $this->assertSame(array('upload_complete'), $continuation['properties']['requires']['enum'] ?? array());
         $this->assertSame(array('upload_id'), array_values((array) ($continuation['properties']['arguments']['required'] ?? array())));
         $this->assertSame(['upload_id'], $GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-install']['input_schema']['required']);
+        $pluginInstallOutput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-install']['output_schema'] ?? array());
+        $pluginInstallProperties = (array) ($pluginInstallOutput['properties'] ?? array());
+        foreach (array('active', 'site_active', 'network_active', 'active_site_ids') as $field) {
+            $this->assertArrayHasKey($field, $pluginInstallProperties);
+        }
+        foreach (array('active', 'site_active', 'network_active', 'active_site_ids') as $field) {
+            $this->assertTrue(in_array($field, (array) ($pluginInstallOutput['required'] ?? array()), true));
+        }
+        $this->assertSame('array', $pluginInstallProperties['active_site_ids']['type'] ?? null);
+        foreach (array('codi/plugin-activate', 'codi/plugin-deactivate') as $abilityName) {
+            $activationOutput = (array) ($GLOBALS['codi_mcp_test_registered_abilities'][$abilityName]['output_schema'] ?? array());
+            foreach (array('active', 'site_active', 'network_active', 'active_site_ids') as $field) {
+                $this->assertArrayHasKey($field, (array) ($activationOutput['properties'] ?? array()));
+                $this->assertTrue(in_array($field, (array) ($activationOutput['required'] ?? array()), true));
+            }
+        }
         $diagnosticRunInput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-run']['input_schema']['properties'] ?? array());
         $this->assertArrayHasKey('actor_user_id', $diagnosticRunInput);
         $this->assertArrayHasKey('explain_slow_queries', $diagnosticRunInput);
@@ -130,7 +147,11 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         $this->assertSame(array('summary', 'full'), (array) ($pluginList['input_schema']['properties']['detail']['enum'] ?? array()));
         $pluginListItem = (array) ($pluginList['output_schema']['properties']['items']['items'] ?? array());
         $this->assertNotContains('description', (array) ($pluginListItem['required'] ?? array()));
+        $this->assertNotContains('active_site_ids', (array) ($pluginListItem['required'] ?? array()));
         $this->assertArrayHasKey('description', (array) ($pluginListItem['properties'] ?? array()));
+        $this->assertArrayHasKey('active_site_ids', (array) ($pluginListItem['properties'] ?? array()));
+        $pluginInfo = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-info'] ?? array());
+        $this->assertTrue(in_array('active_site_ids', (array) ($pluginInfo['output_schema']['required'] ?? array()), true));
 
         $themeList = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/themes-list'] ?? array());
         $this->assertSame(array('summary', 'full'), (array) ($themeList['input_schema']['properties']['detail']['enum'] ?? array()));

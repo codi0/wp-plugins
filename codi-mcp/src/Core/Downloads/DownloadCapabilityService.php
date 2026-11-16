@@ -7,7 +7,7 @@ namespace CodiMcp\Core\Downloads;
 /** Short-lived, site-bound access to an immutable, permission-checked export. */
 final class DownloadCapabilityService
 {
-    private const MAX_BYTES = 50 * 1024 * 1024;
+    private const MAX_DOWNLOAD_BYTES = 128 * 1024 * 1024;
     private const STREAM_CHUNK_BYTES = 64 * 1024;
     private const PURPOSES = ['plugins.export', 'themes.export'];
     /** @var array<int,array{request:object,response:object,stream:resource,size:int}> */
@@ -85,7 +85,7 @@ final class DownloadCapabilityService
 
     public static function registerRoutes(): void
     {
-        $service = new self(new ArtifactDownloadStore(self::MAX_BYTES, 256 * 1024));
+        $service = new self(new ArtifactDownloadStore(self::MAX_DOWNLOAD_BYTES, 256 * 1024));
         $namespace = defined('CODI_MCP_OAUTH_REST_NAMESPACE') ? trim(CODI_MCP_OAUTH_REST_NAMESPACE, '/') : 'codi-mcp/v1';
         register_rest_route($namespace, '/downloads/(?P<purpose>plugins\.export|themes\.export)/(?P<download_id>[a-f0-9]{32})/(?P<expires>[0-9]{1,12})/(?P<token>[a-f0-9]{64})', [
             'methods' => ['GET', 'HEAD'],
@@ -113,7 +113,7 @@ final class DownloadCapabilityService
             return $this->denied();
         }
         $meta = $download['meta'];
-        if ($meta['size'] <= 0 || $meta['size'] > self::MAX_BYTES
+        if ($meta['size'] <= 0 || $meta['size'] > self::MAX_DOWNLOAD_BYTES
             || !preg_match('/^[A-Za-z0-9][A-Za-z0-9._-]{0,199}\.zip$/', (string) ($meta['filename'] ?? ''))) {
             return $this->denied();
         }

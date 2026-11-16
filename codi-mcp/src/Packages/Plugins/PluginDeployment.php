@@ -22,7 +22,7 @@ final class PluginDeployment
     private const UPLOAD_PURPOSE = 'plugins.install';
     private const DOWNLOAD_PURPOSE = 'plugins.export';
 
-    private int $maxZipBytes;
+    private int $maxUploadZipBytes;
     private UploadCapabilityService $uploads;
     private ArtifactDownloadStore $downloads;
     private FolderReplacement $folderReplacement;
@@ -30,11 +30,11 @@ final class PluginDeployment
     private CodeRecoveryStore $recoveries;
     private PackageFingerprint $fingerprints;
 
-    public function __construct(int $maxZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null, ?PackageSourcePolicy $sourcePolicy = null, ?CodeRecoveryStore $recoveries = null, ?PackageFingerprint $fingerprints = null)
+    public function __construct(int $maxUploadZipBytes, int $downloadChunkBytes, ?UploadCapabilityService $uploads = null, ?ArtifactDownloadStore $downloads = null, ?FolderReplacement $folderReplacement = null, ?PackageSourcePolicy $sourcePolicy = null, ?CodeRecoveryStore $recoveries = null, ?PackageFingerprint $fingerprints = null)
     {
-        $this->maxZipBytes = $maxZipBytes;
-        $this->uploads = $uploads ?? new UploadCapabilityService(new UploadStore($maxZipBytes));
-        $this->downloads = $downloads ?? new ArtifactDownloadStore($maxZipBytes, $downloadChunkBytes);
+        $this->maxUploadZipBytes = $maxUploadZipBytes;
+        $this->uploads = $uploads ?? new UploadCapabilityService(new UploadStore($maxUploadZipBytes));
+        $this->downloads = $downloads ?? new ArtifactDownloadStore($maxUploadZipBytes, $downloadChunkBytes);
         $this->folderReplacement = $folderReplacement ?? new FolderReplacement();
         $this->sourcePolicy = $sourcePolicy ?? new PackageSourcePolicy();
         $this->recoveries = $recoveries ?? new CodeRecoveryStore();
@@ -290,15 +290,13 @@ final class PluginDeployment
                 }
                 wp_clean_plugins_cache(true);
                 $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
-                $result = array(
+                $result = array_merge(array(
                     'action' => 'updated',
                     'plugin_slug' => $slug,
                     'plugin_file' => $package['plugin_file'],
                     'name' => $package['name'],
                     'version' => $package['version'],
-                    'active' => is_plugin_active($package['plugin_file']),
-                    'network_active' => is_multisite() && is_plugin_active_for_network($package['plugin_file']),
-                );
+                ), $this->pluginActivationState((string) $package['plugin_file']));
             } elseif ($mode === 'file' && is_array($metadata['replacement'] ?? null)) {
                 $selection = $metadata['replacement'];
                 $package = $this->installedFileTarget($slug, (string) ($selection['file'] ?? ''));
@@ -326,15 +324,13 @@ final class PluginDeployment
                 }
                 wp_clean_plugins_cache(true);
                 $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
-                $result = array(
+                $result = array_merge(array(
                     'action' => 'updated',
                     'plugin_slug' => $slug,
                     'plugin_file' => $package['plugin_file'],
                     'name' => $package['name'],
                     'version' => $package['version'],
-                    'active' => is_plugin_active($package['plugin_file']),
-                    'network_active' => is_multisite() && is_plugin_active_for_network($package['plugin_file']),
-                );
+                ), $this->pluginActivationState((string) $package['plugin_file']));
             } else {
                 $error = new \WP_Error('codi_mcp_bad_metadata', 'Upload replacement selection is invalid.');
                 if (is_array($recovery)) {
@@ -450,15 +446,13 @@ final class PluginDeployment
 
         $this->uploads->consume($uploadId, self::UPLOAD_PURPOSE);
 
-        return [
+        return array_merge([
             'action' => $pluginDirExisted ? 'updated' : 'installed',
             'plugin_slug' => $pluginSlug,
             'plugin_file' => $package['plugin_file'],
             'name' => !empty($installedData['Name']) ? $installedData['Name'] : $package['name'],
             'version' => isset($installedData['Version']) ? (string) $installedData['Version'] : (string) $package['version'],
-            'active' => is_plugin_active($package['plugin_file']),
-            'network_active' => is_multisite() && is_plugin_active_for_network($package['plugin_file']),
-        ];
+        ], $this->pluginActivationState((string) $package['plugin_file']));
     }
 
     public function activate($input)
@@ -846,7 +840,7 @@ final class PluginDeployment
         if (!preg_match('/^[a-z0-9][a-z0-9-]{0,99}$/', $pluginSlug)) {
             return new \WP_Error('codi_mcp_bad_slug', 'Invalid plugin slug.');
         }
-        if ($size < 1 || $size > $this->maxZipBytes) {
+        if ($size < 1 || $size > $this->maxUploadZipBytes) {
             return new \WP_Error('codi_mcp_bad_size', 'ZIP size is outside the allowed range.');
         }
         if (!preg_match('/^[a-f0-9]{64}$/', $sha256)) {
@@ -964,11 +958,23 @@ final class PluginDeployment
 
     private function activationState(string $pluginFile, string $scope): array
     {
+        return array_merge(
+            ['plugin_file' => $pluginFile],
+            $this->pluginActivationState($pluginFile),
+            ['scope' => $scope]
+        );
+    }
+
+    private function pluginActivationState(string $pluginFile): array
+    {
+        $networkActive = is_multisite() && is_plugin_active_for_network($pluginFile);
+        $siteActive = in_array($pluginFile, (array) get_option('active_plugins', array()), true);
+
         return [
-            'plugin_file' => $pluginFile,
-            'active' => is_plugin_active($pluginFile),
-            'network_active' => is_multisite() && is_plugin_active_for_network($pluginFile),
-            'scope' => $scope,
+            'active' => $siteActive || $networkActive,
+            'site_active' => $siteActive,
+            'network_active' => $networkActive,
+            'active_site_ids' => (new NetworkAssetUsage())->pluginActiveSiteIds($pluginFile),
         ];
     }
 

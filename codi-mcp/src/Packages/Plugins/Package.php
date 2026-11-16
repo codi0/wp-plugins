@@ -5,12 +5,16 @@ namespace CodiMcp\Packages\Plugins;
 use CodiMcp\Core\Abilities\AbilityMetadata;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\Deployment\ReplacementSelection;
+use CodiMcp\Core\Downloads\ArtifactDownloadStore;
 use CodiMcp\Core\Downloads\DownloadCapabilityService;
 use CodiMcp\Core\Uploads\UploadCapabilityService;
 
 final class Package implements AbilityPackage
 {
-    private const MAX_ZIP_BYTES = 20 * 1024 * 1024;
+    private const MAX_UPLOAD_ZIP_BYTES = 20 * 1024 * 1024;
+    private const MAX_EXPORT_ARCHIVE_BYTES = 128 * 1024 * 1024;
+    private const MAX_EXPORT_SOURCE_BYTES = 250 * 1024 * 1024;
+    private const MAX_EXPORT_FILES = 25000;
     private const EXPORT_CHUNK_BYTES = 256 * 1024;
 
     /** @var PluginDeployment|null */
@@ -118,8 +122,10 @@ final class Package implements AbilityPackage
                         'plugin_file'    => ['type' => 'string'],
                         'name'           => ['type' => 'string'],
                         'version'        => ['type' => 'string'],
-                        'active'         => ['type' => 'boolean'],
+                        'active'         => ['type' => 'boolean', 'description' => 'Effective activation on the invoking site, including network activation.'],
+                        'site_active'    => ['type' => 'boolean', 'description' => 'Explicitly active on the invoking site.'],
                         'network_active' => ['type' => 'boolean'],
+                        'active_site_ids' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'All sites where this shared plugin code is active.'],
                         'replace' => ['type' => 'string', 'enum' => ['entire', 'folder', 'file']],
                         'folder' => ['type' => 'string'],
                         'file' => ['type' => 'string'],
@@ -127,7 +133,7 @@ final class Package implements AbilityPackage
                         'recovery_expires_at' => ['type' => 'string'],
                         'recovery_scope' => ['type' => 'string', 'enum' => ['code']],
                     ],
-                    'required' => ['action', 'plugin_slug', 'plugin_file', 'name', 'version', 'active', 'network_active'],
+                    'required' => ['action', 'plugin_slug', 'plugin_file', 'name', 'version', 'active', 'site_active', 'network_active', 'active_site_ids'],
                 ],
                 'execute_callback'    => [$this, 'install'],
                 'permission_callback' => [$this, 'canInstallPlugins'],
@@ -160,11 +166,13 @@ final class Package implements AbilityPackage
                     'type'       => 'object',
                     'properties' => [
                         'plugin_file'    => ['type' => 'string'],
-                        'active'         => ['type' => 'boolean'],
+                        'active'         => ['type' => 'boolean', 'description' => 'Effective activation on the invoking site, including network activation.'],
+                        'site_active'    => ['type' => 'boolean', 'description' => 'Explicitly active on the invoking site.'],
                         'network_active' => ['type' => 'boolean'],
+                        'active_site_ids' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'All sites where this shared plugin code is active.'],
                         'scope'          => ['type' => 'string'],
                     ],
-                    'required' => ['plugin_file', 'active', 'network_active', 'scope'],
+                    'required' => ['plugin_file', 'active', 'site_active', 'network_active', 'active_site_ids', 'scope'],
                 ],
                 'execute_callback'    => [$this, 'activate'],
                 'permission_callback' => [$this, 'canActivatePlugins'],
@@ -197,11 +205,13 @@ final class Package implements AbilityPackage
                     'type'       => 'object',
                     'properties' => [
                         'plugin_file'    => ['type' => 'string'],
-                        'active'         => ['type' => 'boolean'],
+                        'active'         => ['type' => 'boolean', 'description' => 'Effective activation on the invoking site, including network activation.'],
+                        'site_active'    => ['type' => 'boolean', 'description' => 'Explicitly active on the invoking site.'],
                         'network_active' => ['type' => 'boolean'],
+                        'active_site_ids' => ['type' => 'array', 'items' => ['type' => 'integer'], 'description' => 'All sites where this shared plugin code is active.'],
                         'scope'          => ['type' => 'string'],
                     ],
-                    'required' => ['plugin_file', 'active', 'network_active', 'scope'],
+                    'required' => ['plugin_file', 'active', 'site_active', 'network_active', 'active_site_ids', 'scope'],
                 ],
                 'execute_callback'    => [$this, 'deactivate'],
                 'permission_callback' => [$this, 'canActivatePlugins'],
@@ -470,7 +480,7 @@ final class Package implements AbilityPackage
                 'size' => [
                     'type' => 'integer',
                     'minimum' => 1,
-                    'maximum' => self::MAX_ZIP_BYTES,
+                    'maximum' => self::MAX_UPLOAD_ZIP_BYTES,
                 ],
                 'sha256' => [
                     'type' => 'string',
@@ -517,7 +527,17 @@ final class Package implements AbilityPackage
     private function deployment(): PluginDeployment
     {
         if ($this->deployment === null) {
-            $this->deployment = new PluginDeployment(self::MAX_ZIP_BYTES, self::EXPORT_CHUNK_BYTES);
+            $this->deployment = new PluginDeployment(
+                self::MAX_UPLOAD_ZIP_BYTES,
+                self::EXPORT_CHUNK_BYTES,
+                null,
+                new ArtifactDownloadStore(
+                    maxArchiveBytes: self::MAX_EXPORT_ARCHIVE_BYTES,
+                    chunkBytes: self::EXPORT_CHUNK_BYTES,
+                    maxFiles: self::MAX_EXPORT_FILES,
+                    maxSourceBytes: self::MAX_EXPORT_SOURCE_BYTES
+                )
+            );
         }
 
         return $this->deployment;

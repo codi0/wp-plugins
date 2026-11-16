@@ -6,6 +6,7 @@ namespace CodiMcp\Packages\Plugins;
 
 use CodiMcp\Core\PackageSourcePolicy;
 use CodiMcp\Core\Deployment\CodeRecoveryStore;
+use CodiMcp\Core\Deployment\NetworkAssetUsage;
 
 final class PluginInspection
 {
@@ -26,7 +27,8 @@ final class PluginInspection
 
     public function list(array $input = array())
     {
-        $plugins = $this->plugins();
+        $detail = strtolower(trim((string) ($input['detail'] ?? 'summary')));
+        $plugins = $this->plugins($detail === 'full');
         if (is_wp_error($plugins)) {
             return $plugins;
         }
@@ -35,7 +37,6 @@ final class PluginInspection
         $status = (string) ($input['status'] ?? 'all');
         $page = max(1, (int) ($input['page'] ?? 1));
         $perPage = min(self::MAX_PER_PAGE, max(1, (int) ($input['per_page'] ?? 20)));
-        $detail = strtolower(trim((string) ($input['detail'] ?? 'summary')));
 
         $rows = array_values(array_filter($plugins, static function (array $plugin) use ($search, $status): bool {
             if ($search !== '') {
@@ -92,7 +93,7 @@ final class PluginInspection
             return new \WP_Error('codi_mcp_plugin_required', 'plugin_file is required.');
         }
 
-        $plugins = $this->plugins();
+        $plugins = $this->plugins(true);
         if (is_wp_error($plugins)) {
             return $plugins;
         }
@@ -107,7 +108,7 @@ final class PluginInspection
     }
 
     /** @return array<int,array<string,mixed>>|\WP_Error */
-    private function plugins()
+    private function plugins(bool $includeActiveSites = false)
     {
         require_once ABSPATH . 'wp-admin/includes/plugin.php';
 
@@ -121,6 +122,13 @@ final class PluginInspection
         $networkActive = is_multisite() ? (array) get_site_option('active_sitewide_plugins', array()) : array();
         $updates = get_site_transient('update_plugins');
         $updateResponses = is_object($updates) && is_array($updates->response ?? null) ? $updates->response : array();
+        $activeSiteMap = array();
+        $siteIds = array();
+        if ($includeActiveSites) {
+            $usage = new NetworkAssetUsage();
+            $activeSiteMap = $usage->pluginActiveSiteMap(array_keys($installed));
+            $siteIds = $usage->siteIds();
+        }
 
         $rows = array();
         foreach ($installed as $pluginFile => $data) {
@@ -151,6 +159,7 @@ final class PluginInspection
                 'active' => $site || $network,
                 'site_active' => $site,
                 'network_active' => $network,
+                'active_site_ids' => $activeSiteMap[$pluginFile] ?? array(),
                 'update_available' => is_object($update) || is_array($update),
                 'update_version' => is_object($update) ? (string) ($update->new_version ?? '') : (is_array($update) ? (string) ($update['new_version'] ?? '') : ''),
                 'source_policy' => $policy,
@@ -183,6 +192,7 @@ final class PluginInspection
                 'active' => true,
                 'site_active' => !is_multisite(),
                 'network_active' => is_multisite(),
+                'active_site_ids' => $siteIds,
                 'update_available' => false,
                 'update_version' => '',
                 'source_policy' => PackageSourcePolicy::EXTERNAL,
@@ -283,6 +293,7 @@ final class PluginInspection
         }
         $properties['kind'] = array('type' => 'string', 'enum' => array('plugin', 'must-use'));
         $properties['requires_plugins'] = array('type' => 'array', 'items' => array('type' => 'string'));
+        $properties['active_site_ids'] = array('type' => 'array', 'items' => array('type' => 'integer'));
         $properties['source_policy'] = array('type' => 'string', 'enum' => array(PackageSourcePolicy::MANAGED, PackageSourcePolicy::EXTERNAL, PackageSourcePolicy::PROTECTED));
         foreach (array('network_only', 'active', 'site_active', 'network_active', 'update_available', 'custom_replace_allowed', 'delete_allowed', 'native_update_allowed') as $field) {
             $properties[$field] = array('type' => 'boolean');

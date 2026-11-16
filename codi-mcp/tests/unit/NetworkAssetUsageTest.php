@@ -41,11 +41,20 @@ final class NetworkAssetUsageTest extends TestCase
         $usage = new NetworkAssetUsage();
         $plugin = 'fixture/fixture.php';
 
-        $GLOBALS['codi_mcp_test_wp_options'][2]['active_plugins'] = array($plugin);
+        $secondPlugin = 'second/second.php';
+        $GLOBALS['codi_mcp_test_wp_options'][2]['active_plugins'] = array($plugin, $secondPlugin);
         $this->assertSame(array(2), $usage->pluginActiveSiteIds($plugin));
+        $this->assertSame(array(
+            $plugin => array(2),
+            $secondPlugin => array(2),
+        ), $usage->pluginActiveSiteMap(array($secondPlugin, $plugin)));
 
         $GLOBALS['codi_mcp_test_wp_site_options']['active_sitewide_plugins'] = array($plugin => time());
         $this->assertSame(array(1, 2), $usage->pluginActiveSiteIds($plugin));
+        $this->assertSame(array(
+            $plugin => array(1, 2),
+            $secondPlugin => array(2),
+        ), $usage->pluginActiveSiteMap(array($plugin, $secondPlugin)));
 
         $GLOBALS['codi_mcp_test_wp_options'][1]['stylesheet'] = 'target-theme';
         $GLOBALS['codi_mcp_test_wp_options'][1]['template'] = 'target-theme';

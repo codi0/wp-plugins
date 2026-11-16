@@ -77,9 +77,17 @@ final class ArtifactDownloadStore
         }
         clearstatcache(true, $paths['archive']);
         $size = @filesize($paths['archive']);
-        if (false === $size || $size < 1 || $size > $this->maxArchiveBytes) {
+        if (false === $size || $size < 1) {
             $this->removeDownloadFiles($paths);
-            return new \WP_Error('codi_mcp_export_archive_too_large', 'Generated ZIP is empty or exceeds the maximum artifact size.');
+            return new \WP_Error('codi_mcp_export_archive_empty', 'Generated ZIP is empty or unreadable.');
+        }
+        if ($size > $this->maxArchiveBytes) {
+            $this->removeDownloadFiles($paths);
+            return new \WP_Error(
+                'codi_mcp_export_archive_too_large',
+                'Generated ZIP exceeds the maximum artifact size.',
+                array('details' => array('archive_bytes' => (int) $size, 'max_archive_bytes' => $this->maxArchiveBytes))
+            );
         }
         $sha256 = hash_file('sha256', $paths['archive']);
         if (!is_string($sha256) || '' === $sha256) {
@@ -141,8 +149,15 @@ final class ArtifactDownloadStore
             return new \WP_Error('codi_mcp_export_source_invalid', 'Export source file is unavailable.');
         }
         $sourceBytes = @filesize($sourcePath);
-        if (false === $sourceBytes || $sourceBytes < 1 || $sourceBytes > $this->maxArchiveBytes) {
-            return new \WP_Error('codi_mcp_export_archive_too_large', 'Generated ZIP is empty or exceeds the maximum artifact size.');
+        if (false === $sourceBytes || $sourceBytes < 1) {
+            return new \WP_Error('codi_mcp_export_archive_empty', 'Export artifact is empty or unreadable.');
+        }
+        if ($sourceBytes > $this->maxArchiveBytes) {
+            return new \WP_Error(
+                'codi_mcp_export_archive_too_large',
+                'Export artifact exceeds the maximum artifact size.',
+                array('details' => array('archive_bytes' => (int) $sourceBytes, 'max_archive_bytes' => $this->maxArchiveBytes))
+            );
         }
         if (!$this->ensureDirectory($this->rootDirectory)) {
             return new \WP_Error('codi_mcp_storage', 'Could not create the artifact download directory.');
@@ -313,7 +328,11 @@ final class ArtifactDownloadStore
                     return new \WP_Error('codi_mcp_export_scope', 'Artifact source resolves outside the selected package directory.');
                 }
                 if (++$entries > $this->maxFiles) {
-                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the entry-count or uncompressed-size limit.');
+                    return new \WP_Error(
+                        'codi_mcp_export_too_many_entries',
+                        'Artifact source exceeds the entry-count limit.',
+                        array('details' => array('entries' => $entries, 'max_entries' => $this->maxFiles))
+                    );
                 }
                 if ($info->isDir()) {
                     $children = @scandir($resolved);
@@ -328,7 +347,11 @@ final class ArtifactDownloadStore
                 $files[] = $resolved;
                 $bytes += max(0, (int) $info->getSize());
                 if ($bytes > $this->maxSourceBytes) {
-                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the entry-count or uncompressed-size limit.');
+                    return new \WP_Error(
+                        'codi_mcp_export_source_too_large',
+                        'Artifact source exceeds the uncompressed-size limit.',
+                        array('details' => array('source_bytes' => $bytes, 'max_source_bytes' => $this->maxSourceBytes))
+                    );
                 }
             }
         } catch (\Throwable) {

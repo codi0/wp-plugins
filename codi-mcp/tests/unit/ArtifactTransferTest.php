@@ -81,7 +81,7 @@ final class ArtifactTransferTest extends TestCase
         $this->assertSame(hash('sha256', $payload), (string) $chunk['sha256']);
     }
 
-    public function test_download_store_rejects_oversized_uncompressed_source(): void
+    public function test_download_store_enforces_independent_entry_source_and_archive_limits(): void
     {
         $source = $this->root . DIRECTORY_SEPARATOR . 'large-source';
         @mkdir($source, 0777, true);
@@ -92,6 +92,21 @@ final class ArtifactTransferTest extends TestCase
         $result = $store->stageDirectory('themes.export', $source, 'demo-theme', 'demo-theme.zip');
         $this->assertTrue(is_wp_error($result));
         $this->assertSame('codi_mcp_export_source_too_large', $result->code);
+        $this->assertSame(10, $result->get_error_data()['details']['max_source_bytes'] ?? null);
+
+        file_put_contents($source . DIRECTORY_SEPARATOR . 'second.txt', 'x');
+        $store = new ArtifactDownloadStore(4096, 16, $this->root . DIRECTORY_SEPARATOR . 'entry-downloads', 3600, 1, 1024, $writer);
+        $result = $store->stageDirectory('themes.export', $source, 'demo-theme', 'demo-theme.zip');
+        $this->assertTrue(is_wp_error($result));
+        $this->assertSame('codi_mcp_export_too_many_entries', $result->code);
+        $this->assertSame(1, $result->get_error_data()['details']['max_entries'] ?? null);
+
+        $store = new ArtifactDownloadStore(3, 16, $this->root . DIRECTORY_SEPARATOR . 'archive-downloads', 3600, 10, 1024, $writer);
+        $result = $store->stageDirectory('themes.export', $source, 'demo-theme', 'demo-theme.zip');
+        $this->assertTrue(is_wp_error($result));
+        $this->assertSame('codi_mcp_export_archive_too_large', $result->code);
+        $this->assertSame(3, $result->get_error_data()['details']['max_archive_bytes'] ?? null);
+        $this->assertSame(6, $result->get_error_data()['details']['archive_bytes'] ?? null);
     }
 
     public function test_native_zip_writer_preserves_empty_source_directories(): void
