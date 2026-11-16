@@ -15,19 +15,20 @@ final class DownloadCapabilityServiceTest extends TestCase
     private DownloadCapabilityService $service;
     private int $now;
     private string $id;
-    private string $bytes = "PK\x03\x04artifact-bytes";
+    private string $bytes;
 
     protected function setUp(): void
     {
+        $this->bytes = "PK\x03\x04" . str_repeat('artifact-bytes-', 7000);
         $this->root = codi_mcp_test_temp_dir() . '/download-capability-' . bin2hex(random_bytes(6));
         mkdir($this->root, 0700, true);
         file_put_contents($this->root . '/source.zip', $this->bytes);
-        $this->store = new ArtifactDownloadStore(4096, 7, $this->root . '/store');
+        $this->store = new ArtifactDownloadStore(1024 * 1024, 7, $this->root . '/store');
         $staged = $this->store->stageFile('plugins.export', $this->root . '/source.zip', 'fixture.zip');
         $this->assertFalse(is_wp_error($staged));
         $this->id = $staged['download_id'];
         $this->now = time();
-        $this->service = new DownloadCapabilityService($this->store, 'fixture-secret', fn (): int => $this->now);
+        $this->service = new DownloadCapabilityService($this->store, 'fixture-secret', fn (): int => $this->now, static function (): void {});
     }
 
     protected function tearDown(): void
@@ -55,7 +56,8 @@ final class DownloadCapabilityServiceTest extends TestCase
         $response = $this->service->handle($this->request($result));
         $this->assertSame('application/zip', $response->get_headers()['Content-Type']);
         $this->assertSame((string) strlen($this->bytes), $response->get_headers()['Content-Length']);
-        $this->assertSame('private, no-store', $response->get_headers()['Cache-Control']);
+        $this->assertSame('private, no-store, no-transform', $response->get_headers()['Cache-Control']);
+        $this->assertSame('bytes', $response->get_headers()['Accept-Ranges']);
     }
 
     public function test_capability_is_bound_to_site_purpose_id_signature_and_expiry(): void
@@ -108,6 +110,29 @@ final class DownloadCapabilityServiceTest extends TestCase
         $this->assertSame('', $bytes);
     }
 
+    public function test_direct_download_supports_single_byte_ranges_without_changing_capability_identity(): void
+    {
+        $result = $this->service->response($this->id, 'plugins.export', []);
+        $request = $this->request($result, 'GET', [], ['range' => 'bytes=7-31']);
+        $response = $this->service->handle($request);
+        $this->assertSame(206, $response->get_status());
+        $this->assertSame('25', $response->get_headers()['Content-Length']);
+        $this->assertSame('bytes 7-31/' . strlen($this->bytes), $response->get_headers()['Content-Range']);
+        ob_start();
+        $this->assertTrue($this->service->serve(false, $response, $request, null));
+        $this->assertSame(substr($this->bytes, 7, 25), ob_get_clean());
+
+        $suffixRequest = $this->request($result, 'GET', [], ['range' => 'bytes=-11']);
+        $suffixResponse = $this->service->handle($suffixRequest);
+        ob_start();
+        $this->assertTrue($this->service->serve(false, $suffixResponse, $suffixRequest, null));
+        $this->assertSame(substr($this->bytes, -11), ob_get_clean());
+
+        $invalid = $this->service->handle($this->request($result, 'GET', [], ['range' => 'bytes=999999999-']));
+        $this->assertTrue(is_wp_error($invalid));
+        $this->assertSame('codi_mcp_download_range_invalid', $invalid->code);
+    }
+
     public function test_transfer_selection_is_explicit_and_unambiguous(): void
     {
         $default = $this->service->response($this->id, 'plugins.export', array());
@@ -127,14 +152,15 @@ final class DownloadCapabilityServiceTest extends TestCase
         $this->assertTrue(is_wp_error($this->service->response($this->id, 'plugins.export', ['transfer' => 'unknown'])));
     }
 
-    private function request(array $result, string $method = 'GET', array $changes = []): object
+    private function request(array $result, string $method = 'GET', array $changes = [], array $headers = []): object
     {
         $parts = explode('/', parse_url($result['download']['url'], PHP_URL_PATH));
         $params = array_combine(['purpose', 'download_id', 'expires', 'token'], array_slice($parts, -4));
-        return new class(array_replace($params, $changes), $method) {
-            public function __construct(private array $params, private string $method) {}
+        return new class(array_replace($params, $changes), $method, $headers) {
+            public function __construct(private array $params, private string $method, private array $headers) {}
             public function get_param(string $key): mixed { return $this->params[$key] ?? null; }
             public function get_method(): string { return $this->method; }
+            public function get_header(string $key): string { return (string) ($this->headers[strtolower($key)] ?? ''); }
         };
     }
 }

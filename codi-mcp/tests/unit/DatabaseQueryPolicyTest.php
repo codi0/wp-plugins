@@ -268,6 +268,51 @@ final class DatabaseQueryPolicyTest extends TestCase
         $this->assertTrue($result['redacted_fields'] >= 3);
     }
 
+    public function test_sanitization_invariant_redacts_structured_and_high_entropy_secrets(): void
+    {
+        $policy = new QueryPolicy();
+        $serializedSecret = serialize(array(
+            'account' => array(
+                'client_secret' => 'short-secret',
+            ),
+        ));
+        $serializedUnknownToken = serialize(array(
+            'opaque' => 'A9k2Lm8Qx7Vr4Np1Zs6Tu3Wy0Bc5Df',
+        ));
+        $serializedBenign = serialize(array(
+            'display_name' => 'Example Account',
+            'enabled' => true,
+        ));
+        $jsonSecret = json_encode(array(
+            'account' => array(
+                'access_token' => 'short-token',
+            ),
+        ));
+        $jsonUnknownToken = json_encode(array(
+            'opaque' => 'Q7m2Vp9Ls4Xa8Nc1Rt6Ky3Bw0Df5Hg',
+        ));
+
+        $result = $policy->sanitizeRows(array(
+            array('option_name' => 'codi_mail_inbound_accounts', 'option_value' => $serializedSecret),
+            array('option_name' => 'ordinary_serialized', 'option_value' => $serializedUnknownToken),
+            array('option_name' => 'ordinary_serialized', 'option_value' => $serializedBenign),
+            array('option_name' => 'ordinary_json', 'option_value' => $jsonSecret),
+            array('option_name' => 'ordinary_json', 'option_value' => $jsonUnknownToken),
+            array('option_name' => 'ordinary_scalar', 'option_value' => 'A9k2Lm8Qx7Vr4Np1Zs6Tu3Wy0Bc5Df'),
+            array('option_name' => 'ordinary_scalar', 'option_value' => 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'),
+            array('option_name' => 'ordinary_scalar', 'option_value' => '550e8400-e29b-41d4-a716-446655440000'),
+        ));
+
+        $this->assertSame('[REDACTED]', $result['rows'][0]['option_value']);
+        $this->assertSame('[REDACTED]', $result['rows'][1]['option_value']);
+        $this->assertSame($serializedBenign, $result['rows'][2]['option_value']);
+        $this->assertSame('[REDACTED]', $result['rows'][3]['option_value']);
+        $this->assertSame('[REDACTED]', $result['rows'][4]['option_value']);
+        $this->assertSame('[REDACTED]', $result['rows'][5]['option_value']);
+        $this->assertSame('aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', $result['rows'][6]['option_value']);
+        $this->assertSame('550e8400-e29b-41d4-a716-446655440000', $result['rows'][7]['option_value']);
+    }
+
     public function test_sensitive_identifier_privacy_is_syntax_invariant(): void
     {
         $policy = new QueryPolicy();

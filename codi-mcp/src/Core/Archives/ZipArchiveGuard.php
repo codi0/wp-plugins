@@ -88,8 +88,8 @@ final class ZipArchiveGuard
         }
         $uncompressedBytes = 0;
         foreach ($entries as $entry) {
-            $name = str_replace('\\', '/', trim((string) ($entry['name'] ?? '')));
-            if ($name === '' || str_contains($name, "\0") || str_starts_with($name, '/') || preg_match('#^[A-Za-z]:/#', $name) || preg_match('#(?:^|/)\.\.(?:/|$)#', $name)) {
+            $name = (string) ($entry['name'] ?? '');
+            if (!PackagePathPolicy::isSafeArchiveEntry($name)) {
                 return new \WP_Error('codi_mcp_archive_path_invalid', 'ZIP archive contains an unsafe entry path.');
             }
             $uncompressedBytes += max(0, (int) ($entry['size'] ?? 0));

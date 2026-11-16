@@ -8,6 +8,7 @@ use CodiMcp\Core\Abilities\AbilityMetadata;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\Deployment\ReplacementSelection;
 use CodiMcp\Core\Downloads\DownloadCapabilityService;
+use CodiMcp\Core\Uploads\UploadCapabilityService;
 
 final class Package implements AbilityPackage
 {
@@ -218,6 +219,7 @@ final class Package implements AbilityPackage
                 'sha256' => array('type' => 'string'),
                 'expires_at' => array('type' => 'string'),
             )),
+            'continuation' => UploadCapabilityService::continuationSchema(),
             'instruction' => array('type' => 'string'),
         ));
     }

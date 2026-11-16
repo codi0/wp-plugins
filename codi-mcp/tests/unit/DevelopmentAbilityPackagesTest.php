@@ -101,6 +101,12 @@ final class DevelopmentAbilityPackagesTest extends TestCase
         $this->assertSame(false, $uploadSchema['additionalProperties']);
         $this->assertSame(array('entire', 'folder', 'file'), $uploadProperties['replace']['enum']);
         $this->assertSame(array('plugin_slug', 'size', 'sha256'), array_values((array) ($uploadSchema['required'] ?? array())));
+        $uploadOutput = (array) ($uploadDescriptor['output_schema'] ?? array());
+        $continuation = (array) (($uploadOutput['properties']['continuation'] ?? array()));
+        $this->assertSame(false, $continuation['additionalProperties'] ?? null);
+        $this->assertSame(array('requires', 'ability', 'arguments'), array_values((array) ($continuation['required'] ?? array())));
+        $this->assertSame(array('upload_complete'), $continuation['properties']['requires']['enum'] ?? array());
+        $this->assertSame(array('upload_id'), array_values((array) ($continuation['properties']['arguments']['required'] ?? array())));
         $this->assertSame(['upload_id'], $GLOBALS['codi_mcp_test_registered_abilities']['codi/plugin-install']['input_schema']['required']);
         $diagnosticRunInput = (array) ($GLOBALS['codi_mcp_test_registered_abilities']['codi/diagnostic-run']['input_schema']['properties'] ?? array());
         $this->assertArrayHasKey('actor_user_id', $diagnosticRunInput);

@@ -6,6 +6,7 @@ use CodiMcp\Core\Abilities\AbilityMetadata;
 use CodiMcp\Core\AbilityPackage;
 use CodiMcp\Core\Deployment\ReplacementSelection;
 use CodiMcp\Core\Downloads\DownloadCapabilityService;
+use CodiMcp\Core\Uploads\UploadCapabilityService;
 
 final class Package implements AbilityPackage
 {
@@ -506,9 +507,10 @@ final class Package implements AbilityPackage
                     ],
                     'required' => ['method', 'url', 'content_type', 'size', 'sha256', 'expires_at'],
                 ],
+                'continuation' => UploadCapabilityService::continuationSchema(),
                 'instruction' => ['type' => 'string'],
             ],
-            'required' => ['upload_id', 'complete', 'upload', 'instruction'],
+            'required' => ['upload_id', 'complete', 'upload', 'continuation', 'instruction'],
         ];
     }
 

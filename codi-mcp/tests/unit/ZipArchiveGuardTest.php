@@ -33,10 +33,10 @@ final class ZipArchiveGuardTest extends TestCase
         $this->assertSame('codi_mcp_archive_too_large', (string) ($tooLarge->code ?? ''));
     }
 
-    public function test_archive_guard_rejects_unsafe_entry_paths(): void
+    public function test_archive_guard_rejects_unsafe_or_nonportable_entry_paths(): void
     {
         $guard = new ZipArchiveGuard();
-        foreach (array('../escape.php', '/absolute.php', 'C:/absolute.php', 'demo/../escape.php') as $path) {
+        foreach (array('../escape.php', '/absolute.php', 'C:/absolute.php', 'demo/../escape.php', 'demo/file.php:Zone.Identifier', 'demo/file.php:Zone.Identifier:$DATA') as $path) {
             $result = $guard->validateEntries(array(array('name' => $path, 'size' => 1)));
             $this->assertTrue(is_wp_error($result), $path);
             $this->assertSame('codi_mcp_archive_path_invalid', (string) ($result->code ?? ''), $path);

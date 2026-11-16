@@ -158,7 +158,12 @@ final class PluginDeployment
         $result['replace'] = $selection['replace'];
         $result['folder'] = $selection['folder'];
         $result['file'] = $selection['file'];
-        $result['instruction'] = 'PUT upload.url, then call codi/plugin-install with upload_id.';
+        $installAbility = rtrim(CODI_MCP_ABILITY_PREFIX, '/') . '/plugin-install';
+        $result['continuation'] = UploadCapabilityService::continuation(
+            $installAbility,
+            (string) ($result['upload_id'] ?? '')
+        );
+        $result['instruction'] = 'PUT upload.url, then call ' . $installAbility . ' with upload_id.';
         return $result;
     }
 

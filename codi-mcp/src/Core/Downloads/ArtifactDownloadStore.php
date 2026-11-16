@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace CodiMcp\Core\Downloads;
 
+use CodiMcp\Core\Archives\PackagePathPolicy;
+
 final class ArtifactDownloadStore
 {
     private const DEFAULT_TTL_SECONDS = 3600;
@@ -299,12 +301,19 @@ final class ArtifactDownloadStore
                 if ($info->isLink()) {
                     return new \WP_Error('codi_mcp_export_symlink', 'Artifact export refuses symbolic links.');
                 }
-                if (++$entries > $this->maxFiles) {
-                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the entry-count or uncompressed-size limit.');
+                $candidate = ltrim(str_replace('\\', '/', substr($info->getPathname(), strlen($sourceRoot))), '/');
+                if ($info->isFile() && PackagePathPolicy::isIgnorablePlatformMetadata($candidate)) {
+                    continue;
+                }
+                if ($candidate === '' || !PackagePathPolicy::isSafeArchiveEntry($candidate)) {
+                    return new \WP_Error('codi_mcp_export_path_invalid', 'Artifact source contains a non-portable entry path.');
                 }
                 $resolved = $info->getRealPath();
                 if (!is_string($resolved) || !$this->withinRoot($resolved, $sourceRoot)) {
                     return new \WP_Error('codi_mcp_export_scope', 'Artifact source resolves outside the selected package directory.');
+                }
+                if (++$entries > $this->maxFiles) {
+                    return new \WP_Error('codi_mcp_export_source_too_large', 'Artifact source exceeds the entry-count or uncompressed-size limit.');
                 }
                 if ($info->isDir()) {
                     $children = @scandir($resolved);

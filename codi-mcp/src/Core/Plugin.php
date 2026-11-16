@@ -237,7 +237,7 @@ final class Plugin
 
     public function filterExposedCorsHeaders(array $headers): array
     {
-        foreach (['WWW-Authenticate', 'Mcp-Session-Id', 'MCP-Protocol-Version'] as $header) {
+        foreach (['WWW-Authenticate', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Accept-Ranges', 'Content-Range'] as $header) {
             $headers[] = $header;
         }
         return array_values(array_unique($headers));
@@ -245,7 +245,7 @@ final class Plugin
 
     public function filterAllowedCorsHeaders(array $headers): array
     {
-        foreach (['Mcp-Session-Id', 'MCP-Protocol-Version'] as $header) {
+        foreach (['Mcp-Session-Id', 'MCP-Protocol-Version', 'Range'] as $header) {
             $headers[] = $header;
         }
         return array_values(array_unique($headers));

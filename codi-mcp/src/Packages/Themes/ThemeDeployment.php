@@ -145,7 +145,12 @@ final class ThemeDeployment
         $result['replace'] = $selection['replace'];
         $result['folder'] = $selection['folder'];
         $result['file'] = $selection['file'];
-        $result['instruction'] = 'PUT upload.url, then call codi/theme-install with upload_id.';
+        $installAbility = rtrim(CODI_MCP_ABILITY_PREFIX, '/') . '/theme-install';
+        $result['continuation'] = UploadCapabilityService::continuation(
+            $installAbility,
+            (string) ($result['upload_id'] ?? '')
+        );
+        $result['instruction'] = 'PUT upload.url, then call ' . $installAbility . ' with upload_id.';
         return $result;
     }
 

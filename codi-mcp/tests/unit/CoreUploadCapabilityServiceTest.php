@@ -245,6 +245,34 @@ final class CoreUploadCapabilityServiceTest extends TestCase
         $this->assertSame('test-theme', (string) ($complete['meta']['metadata']['stylesheet'] ?? ''));
     }
 
+    public function test_package_upload_continuations_bind_the_exact_staged_upload_to_authenticated_install(): void
+    {
+        $pluginData = "PK\x03\x04plugin-continuation";
+        $themeData = "PK\x03\x04theme-continuation";
+
+        foreach (array(
+            array(
+                'deployment' => new PluginDeployment(1024, 16, new UploadCapabilityService(new UploadStore(1024, $this->rootDirectory . DIRECTORY_SEPARATOR . 'plugin-continuation'))),
+                'input' => array('plugin_slug' => 'test-plugin', 'size' => strlen($pluginData), 'sha256' => hash('sha256', $pluginData)),
+                'ability' => 'codi/plugin-install',
+            ),
+            array(
+                'deployment' => new ThemeDeployment(1024, 16, new UploadCapabilityService(new UploadStore(1024, $this->rootDirectory . DIRECTORY_SEPARATOR . 'theme-continuation'))),
+                'input' => array('stylesheet' => 'test-theme', 'size' => strlen($themeData), 'sha256' => hash('sha256', $themeData)),
+                'ability' => 'codi/theme-install',
+            ),
+        ) as $case) {
+            $result = $case['deployment']->upload($case['input']);
+            $this->assertFalse($result instanceof \WP_Error);
+            $uploadId = (string) ($result['upload_id'] ?? '');
+            $this->assertSame(array(
+                'requires' => 'upload_complete',
+                'ability' => $case['ability'],
+                'arguments' => array('upload_id' => $uploadId),
+            ), $result['continuation'] ?? null);
+        }
+    }
+
     /** @return resource */
     private function stream(string $data)
     {

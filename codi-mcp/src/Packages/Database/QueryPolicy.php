@@ -157,7 +157,12 @@ final class QueryPolicy
             $clean = array();
             foreach ($row as $column => $value) {
                 $column = (string) $column;
-                if ($this->isSensitiveColumn($column) || ($sensitiveContext && $this->isPayloadColumn($column)) || $this->looksLikeSecretValue($value)) {
+                if (
+                    $this->isSensitiveColumn($column)
+                    || ($sensitiveContext && $this->isPayloadColumn($column))
+                    || $this->looksLikeSecretValue($value)
+                    || $this->containsSensitiveStructuredPayload($value)
+                ) {
                     $clean[$column] = '[REDACTED]';
                     $redacted++;
                     continue;
@@ -380,7 +385,95 @@ final class QueryPolicy
         if (preg_match('/^[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}$/', $value)) {
             return true;
         }
-        return (bool) preg_match('/^\$(?:P\$|H\$|2[aby]\$|wp\$)/', $value);
+        if (preg_match('/^\$(?:P\$|H\$|2[aby]\$|wp\$)/', $value)) {
+            return true;
+        }
+
+        $candidate = trim($value);
+        if (
+            strlen($candidate) < 20
+            || preg_match('/\s/', $candidate)
+            || !preg_match('/^[A-Za-z0-9._~+\/=\-]+$/', $candidate)
+            || $this->isObviousNonSecretToken($candidate)
+        ) {
+            return false;
+        }
+
+        return $this->shannonEntropy($candidate) >= 3.5;
+    }
+
+    private function containsSensitiveStructuredPayload($value): bool
+    {
+        if (!is_string($value) || $value === '') {
+            return false;
+        }
+
+        $trimmed = trim($value);
+        if ($trimmed === '') {
+            return false;
+        }
+
+        if ($trimmed[0] === '{' || $trimmed[0] === '[') {
+            $decoded = json_decode($trimmed, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded) && $this->structuredValueContainsSecret($decoded)) {
+                return true;
+            }
+        }
+
+        if (preg_match_all('/s:\d+:"([^"]*)";/', $value, $matches)) {
+            foreach ((array) ($matches[1] ?? array()) as $serializedString) {
+                $serializedString = (string) $serializedString;
+                if ($this->isSensitiveKeyName($serializedString) || $this->looksLikeSecretValue($serializedString)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function structuredValueContainsSecret(array $value): bool
+    {
+        foreach ($value as $key => $item) {
+            if (is_string($key) && $this->isSensitiveKeyName($key)) {
+                return true;
+            }
+            if (is_array($item) && $this->structuredValueContainsSecret($item)) {
+                return true;
+            }
+            if (is_string($item) && $this->looksLikeSecretValue($item)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isObviousNonSecretToken(string $value): bool
+    {
+        $lower = strtolower($value);
+        if (in_array($lower, array('changeme', 'change-me', 'example', 'placeholder', 'redacted'), true)) {
+            return true;
+        }
+        if (preg_match('/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/', $value)) {
+            return true;
+        }
+        return (bool) preg_match('/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', $value);
+    }
+
+    private function shannonEntropy(string $value): float
+    {
+        $length = strlen($value);
+        if ($length === 0) {
+            return 0.0;
+        }
+
+        $entropy = 0.0;
+        foreach (count_chars($value, 1) as $count) {
+            $probability = $count / $length;
+            $entropy -= $probability * log($probability, 2);
+        }
+        return $entropy;
     }
 
     private function truncateUtf8(string $value, int $bytes): string

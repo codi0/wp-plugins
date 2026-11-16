@@ -8,6 +8,7 @@ namespace CodiMcp\Core\Downloads;
 final class DownloadCapabilityService
 {
     private const MAX_BYTES = 50 * 1024 * 1024;
+    private const STREAM_CHUNK_BYTES = 64 * 1024;
     private const PURPOSES = ['plugins.export', 'themes.export'];
     /** @var array<int,array{request:object,response:object,stream:resource,size:int}> */
     private array $pending = [];
@@ -15,7 +16,8 @@ final class DownloadCapabilityService
     public function __construct(
         private ArtifactDownloadStore $downloads,
         private ?string $secret = null,
-        private ?\Closure $clock = null
+        private ?\Closure $clock = null,
+        private ?\Closure $outputPreparer = null
     ) {}
 
     /** Direct download is the default; sequential base64 transfer must be selected explicitly. */
@@ -125,12 +127,28 @@ final class DownloadCapabilityService
             fclose($stream);
             return $this->denied();
         }
-        $response = new \WP_REST_Response(null, 200, [
-            'Content-Type' => 'application/zip', 'Content-Length' => (string) $meta['size'],
+        $range = $this->requestedRange($request, (int) $meta['size']);
+        if ($range instanceof \WP_Error) {
+            fclose($stream);
+            return $range;
+        }
+        [$offset, $length] = $range;
+        if ($offset > 0 && 0 !== fseek($stream, $offset)) {
+            fclose($stream);
+            return $this->denied();
+        }
+        $partial = $offset !== 0 || $length !== (int) $meta['size'];
+        $headers = [
+            'Content-Type' => 'application/zip', 'Content-Length' => (string) $length,
             'Content-Disposition' => 'attachment; filename="' . $meta['filename'] . '"',
-            'Cache-Control' => 'private, no-store', 'X-Content-Type-Options' => 'nosniff',
-        ]);
-        $this->pending[spl_object_id($response)] = ['request' => $request, 'response' => $response, 'stream' => $stream, 'size' => $meta['size']];
+            'Cache-Control' => 'private, no-store, no-transform', 'X-Content-Type-Options' => 'nosniff',
+            'Accept-Ranges' => 'bytes',
+        ];
+        if ($partial) {
+            $headers['Content-Range'] = 'bytes ' . $offset . '-' . ($offset + $length - 1) . '/' . $meta['size'];
+        }
+        $response = new \WP_REST_Response(null, $partial ? 206 : 200, $headers);
+        $this->pending[spl_object_id($response)] = ['request' => $request, 'response' => $response, 'stream' => $stream, 'size' => $length];
         return $response;
     }
 
@@ -140,15 +158,12 @@ final class DownloadCapabilityService
             if ($pending['request'] !== $request) { continue; }
             unset($this->pending[$id]);
             try {
-                if ($served || $result !== $pending['response'] || $result->get_status() !== 200) {
+                if ($served || $result !== $pending['response'] || !in_array($result->get_status(), [200, 206], true)) {
                     return (bool) $served;
                 }
                 if (strtoupper($request->get_method()) !== 'HEAD') {
-                    $output = fopen('php://output', 'wb');
-                    if (is_resource($output)) {
-                        stream_copy_to_stream($pending['stream'], $output, $pending['size']);
-                        fclose($output);
-                    }
+                    $this->prepareOutput();
+                    $this->stream($pending['stream'], $pending['size']);
                 }
                 return true;
             } finally {
@@ -156,6 +171,86 @@ final class DownloadCapabilityService
             }
         }
         return (bool) $served;
+    }
+
+    private function prepareOutput(): void
+    {
+        if ($this->outputPreparer !== null) {
+            ($this->outputPreparer)();
+            return;
+        }
+        @ini_set('zlib.output_compression', '0');
+        while (ob_get_level() > 0) {
+            if (!@ob_end_clean()) {
+                break;
+            }
+        }
+    }
+
+    /** @return array{0:int,1:int}|\WP_Error */
+    private function requestedRange(object $request, int $size): array|\WP_Error
+    {
+        if (!method_exists($request, 'get_header')) {
+            return [0, $size];
+        }
+        $header = trim((string) $request->get_header('range'));
+        if ($header === '') {
+            return [0, $size];
+        }
+        if (1 !== preg_match('/^bytes=(\d*)-(\d*)$/', $header, $matches) || ($matches[1] === '' && $matches[2] === '')) {
+            return new \WP_Error('codi_mcp_download_range_invalid', 'Download byte range is invalid.', ['status' => 416]);
+        }
+        if ($matches[1] === '') {
+            $suffix = max(0, (int) $matches[2]);
+            if ($suffix < 1) {
+                return new \WP_Error('codi_mcp_download_range_invalid', 'Download byte range is invalid.', ['status' => 416]);
+            }
+            $length = min($size, $suffix);
+            return [$size - $length, $length];
+        }
+        $start = (int) $matches[1];
+        if ($start >= $size) {
+            return new \WP_Error('codi_mcp_download_range_invalid', 'Download byte range is outside the generated artifact.', ['status' => 416]);
+        }
+        $end = $matches[2] === '' ? $size - 1 : min($size - 1, (int) $matches[2]);
+        if ($end < $start) {
+            return new \WP_Error('codi_mcp_download_range_invalid', 'Download byte range is invalid.', ['status' => 416]);
+        }
+        return [$start, $end - $start + 1];
+    }
+
+    private function stream($stream, int $size): bool
+    {
+        $output = fopen('php://output', 'wb');
+        if (!is_resource($output)) {
+            return false;
+        }
+        $remaining = $size;
+        try {
+            while ($remaining > 0) {
+                $raw = fread($stream, min(self::STREAM_CHUNK_BYTES, $remaining));
+                if (!is_string($raw) || $raw === '') {
+                    return false;
+                }
+                $length = strlen($raw);
+                $written = 0;
+                while ($written < $length) {
+                    $count = fwrite($output, substr($raw, $written));
+                    if (!is_int($count) || $count < 1) {
+                        return false;
+                    }
+                    $written += $count;
+                }
+                $remaining -= $length;
+                fflush($output);
+                if (function_exists('flush')) {
+                    flush();
+                }
+            }
+            return true;
+        } finally {
+            fclose($output);
+        }
     }
 
     public function __destruct()

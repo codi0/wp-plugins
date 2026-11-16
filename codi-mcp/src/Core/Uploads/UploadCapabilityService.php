@@ -140,6 +140,39 @@ final class UploadCapabilityService
         return $this->uploads->discard(trim($uploadId), $purpose);
     }
 
+    /** @return array{requires:string,ability:string,arguments:array{upload_id:string}} */
+    public static function continuation(string $ability, string $uploadId): array
+    {
+        return array(
+            'requires' => 'upload_complete',
+            'ability' => trim($ability),
+            'arguments' => array('upload_id' => trim($uploadId)),
+        );
+    }
+
+    public static function continuationSchema(): array
+    {
+        $strictObject = static fn (array $properties): array => array(
+            'type' => 'object',
+            'additionalProperties' => false,
+            'properties' => $properties,
+            'required' => array_keys($properties),
+        );
+
+        return $strictObject(array(
+            'requires' => array('type' => 'string', 'enum' => array('upload_complete')),
+            'ability' => array('type' => 'string', 'minLength' => 1, 'maxLength' => 200),
+            'arguments' => $strictObject(array(
+                'upload_id' => array(
+                    'type' => 'string',
+                    'minLength' => 32,
+                    'maxLength' => 32,
+                    'pattern' => '^[a-f0-9]{32}$',
+                ),
+            )),
+        ));
+    }
+
     public static function registerCleanupCron(): void
     {
         if (function_exists('add_action')) {
