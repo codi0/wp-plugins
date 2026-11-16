@@ -91,9 +91,23 @@ function codi_debug_settings_page() {
 		<p><a href="<?php echo esc_url(codi_debug_errors_url()); ?>">View recent PHP errors</a></p>
 
 		<h2>PHP error log</h2>
+		<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
+			<input type="hidden" name="action" value="codi_debug_save_settings">
+			<?php wp_nonce_field('codi_debug_save_settings'); ?>
+			<table class="form-table" role="presentation">
+				<tr>
+					<th scope="row"><label for="codi-debug-error-log-path">Custom error log path</label></th>
+					<td>
+						<input type="text" class="regular-text code" id="codi-debug-error-log-path" name="codi_debug[error_log_path]" value="<?php echo esc_attr($settings['error_log_path']); ?>" <?php echo defined('CODI_DEBUG_ERROR_LOG') ? 'readonly' : ''; ?>>
+						<p class="description">Leave blank to auto-detect. Example: <code>/var/www/wordpress/logs/error.log</code>.<?php if(defined('CODI_DEBUG_ERROR_LOG')) : ?> The <code>CODI_DEBUG_ERROR_LOG</code> constant is defined and takes precedence.<?php endif; ?></p>
+					</td>
+				</tr>
+			</table>
 		<table class="widefat striped" style="max-width:900px;margin-bottom:24px;">
 			<tbody>
-				<tr><th style="width:180px;">Detected path</th><td><code><?php echo esc_html($log['path'] ?: 'Not detected'); ?></code></td></tr>
+				<tr><th style="width:180px;">Resolved path</th><td><code><?php echo esc_html($log['path'] ?: 'Not detected'); ?></code></td></tr>
+				<tr><th>Source</th><td><?php echo esc_html($log['source'] ?: 'None'); ?></td></tr>
+				<tr><th>File exists</th><td><?php echo $log['exists'] ? 'Yes' : 'No'; ?></td></tr>
 				<tr><th>Readable</th><td><?php echo $log['readable'] ? 'Yes' : 'No'; ?></td></tr>
 				<?php if($log['readable']) : ?>
 					<tr><th>Size</th><td><?php echo esc_html(size_format($log['size'])); ?></td></tr>
@@ -101,10 +115,6 @@ function codi_debug_settings_page() {
 				<?php endif; ?>
 			</tbody>
 		</table>
-
-		<form method="post" action="<?php echo esc_url(admin_url('admin-post.php')); ?>">
-			<input type="hidden" name="action" value="codi_debug_save_settings">
-			<?php wp_nonce_field('codi_debug_save_settings'); ?>
 
 			<h2>Notifications</h2>
 			<table class="form-table" role="presentation">
@@ -192,7 +202,7 @@ function codi_debug_errors_page() {
 		<p><a href="<?php echo esc_url(codi_debug_settings_url()); ?>">Codi Debug settings</a></p>
 
 		<?php if(!$log['readable']) : ?>
-			<div class="notice notice-warning"><p>No readable PHP error log could be detected. Codi Debug checks PHP's configured <code>error_log</code> first, then <code>WP_DEBUG_LOG</code>. A custom path can be supplied with the <code>CODI_DEBUG_ERROR_LOG</code> constant or <code>codi_debug_error_log_path</code> filter.</p></div>
+			<div class="notice notice-warning"><p>No readable PHP error log could be detected. Set a custom path in Codi Debug settings, or leave it blank to auto-detect PHP's configured <code>error_log</code> and then <code>WP_DEBUG_LOG</code>. The <code>CODI_DEBUG_ERROR_LOG</code> constant and <code>codi_debug_error_log_path</code> filter can still override the detected path.</p></div>
 		<?php else : ?>
 			<p>Source: <code><?php echo esc_html($log['path']); ?></code>. Showing parsed entries from the most recent log data; this screen never clears or modifies the log.</p>
 

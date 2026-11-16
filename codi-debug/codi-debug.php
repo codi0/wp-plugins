@@ -3,7 +3,7 @@
 /*
 Plugin Name: Codi Debug
 Description: Display debug bar that includes load time, memory usage and number of queries
-Version: 1.1.3
+Version: 1.1.5
 Author: codi0
 Author URI: https://github.com/codi-si/wp
 */

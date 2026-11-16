@@ -4,6 +4,7 @@ defined('ABSPATH') or die;
 
 function codi_debug_default_settings() {
 	return [
+		'error_log_path' => '',
 		'notifications_enabled' => 0,
 		'recipient' => codi_debug_default_recipient(),
 		'alert_enabled' => 1,
@@ -86,8 +87,11 @@ function codi_debug_sanitize_settings($input) {
 	$intervals = codi_debug_interval_choices();
 	$severities = codi_debug_min_severity_choices();
 	$recipient = isset($input['recipient']) ? sanitize_email($input['recipient']) : '';
+	$errorLogPath = isset($input['error_log_path']) ? trim((string) $input['error_log_path']) : '';
+	$errorLogPath = str_replace([ "\0", "\r", "\n" ], '', $errorLogPath);
 
 	return [
+		'error_log_path' => $errorLogPath,
 		'notifications_enabled' => empty($input['notifications_enabled']) ? 0 : 1,
 		'recipient' => $recipient ?: $defaults['recipient'],
 		'alert_enabled' => empty($input['alert_enabled']) ? 0 : 1,
@@ -216,33 +220,68 @@ function codi_debug_deactivate($networkWide = false) {
 	wp_clear_scheduled_hook('codi_debug/error_summary');
 }
 
-function codi_debug_error_log_path() {
-	$path = defined('CODI_DEBUG_ERROR_LOG') ? trim((string) CODI_DEBUG_ERROR_LOG) : '';
-	if($path === '') {
-		$path = trim((string) ini_get('error_log'));
+function codi_debug_select_error_log_path($constantPath, $settingPath, $phpPath, $wpDebugPath) {
+	$candidates = [
+		'constant' => trim((string) $constantPath),
+		'setting' => trim((string) $settingPath),
+		'php.ini' => trim((string) $phpPath),
+		'WP_DEBUG_LOG' => trim((string) $wpDebugPath),
+	];
+
+	foreach($candidates as $source => $path) {
+		if($path === '' || strtolower($path) === 'syslog' || preg_match('/^[a-z][a-z0-9+.\-]*:\/\//i', $path)) {
+			continue;
+		}
+		return [ 'path' => $path, 'source' => $source ];
 	}
-	if($path === '' || strtolower($path) === 'syslog' || preg_match('/^[a-z][a-z0-9+.\-]*:\/\//i', $path)) {
-		$path = '';
-	}
-	if($path === '' && defined('WP_DEBUG_LOG') && WP_DEBUG_LOG) {
-		$path = is_string(WP_DEBUG_LOG)
+
+	return [ 'path' => '', 'source' => '' ];
+}
+
+function codi_debug_error_log_resolution() {
+	$settings = codi_debug_get_settings();
+	$wpDebugPath = '';
+	if(defined('WP_DEBUG_LOG') && WP_DEBUG_LOG) {
+		$wpDebugPath = is_string(WP_DEBUG_LOG)
 			? WP_DEBUG_LOG
 			: (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/debug.log' : '');
 	}
+
+	$resolution = codi_debug_select_error_log_path(
+		defined('CODI_DEBUG_ERROR_LOG') ? CODI_DEBUG_ERROR_LOG : '',
+		$settings['error_log_path'] ?? '',
+		ini_get('error_log'),
+		$wpDebugPath
+	);
+	$path = $resolution['path'];
 	if($path !== '' && !preg_match('/^(?:[a-zA-Z]:[\\\\\/]|\/|\\\\\\\\)/', $path) && defined('ABSPATH')) {
 		$path = rtrim(ABSPATH, '/\\') . '/' . ltrim($path, '/\\');
 	}
 	if(function_exists('wp_normalize_path')) {
 		$path = wp_normalize_path($path);
 	}
-	return (string) apply_filters('codi_debug_error_log_path', $path);
+	$filtered = (string) apply_filters('codi_debug_error_log_path', $path);
+	if($filtered !== $path) {
+		$resolution['source'] = 'filter';
+	}
+	$resolution['path'] = $filtered;
+	return $resolution;
+}
+
+function codi_debug_error_log_path() {
+	$resolution = codi_debug_error_log_resolution();
+	return $resolution['path'];
 }
 
 function codi_debug_error_log_info() {
-	$path = codi_debug_error_log_path();
+	$resolution = codi_debug_error_log_resolution();
+	$path = $resolution['path'];
+	$exists = $path !== '' && is_file($path);
 	$readable = $path !== '' && is_file($path) && is_readable($path);
 	return [
 		'path' => $path,
+		'source' => $resolution['source'],
+		'exists' => $exists,
 		'readable' => $readable,
 		'size' => $readable ? (int) filesize($path) : 0,
 		'modified' => $readable ? (int) filemtime($path) : 0,
@@ -373,6 +412,18 @@ function codi_debug_parse_log_text($text) {
 
 	foreach($lines as $line) {
 		if($line === '') {
+			continue;
+		}
+		if(preg_match('/^(\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?)\s+.*?\[STDERR\]\s*(.*)$/i', $line, $match)) {
+			$flush();
+			$current = [ 'timestamp' => $match[1], 'message' => $match[2] ];
+			continue;
+		}
+		//OpenLiteSpeed's server error log mixes PHP stderr with web-server
+		//diagnostics. A new timestamped non-STDERR line ends any PHP entry but
+		//is not itself an application error.
+		if(preg_match('/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(?:\.\d+)?\s+\[[^\]]+\]/', $line)) {
+			$flush();
 			continue;
 		}
 		if(preg_match('/^\[([^\]]+)\]\s*(.*)$/', $line, $match)) {
