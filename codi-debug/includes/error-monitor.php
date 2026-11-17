@@ -289,14 +289,23 @@ function codi_debug_error_log_info() {
 }
 
 function codi_debug_classify_severity($message) {
-	$message = strtolower((string) $message);
-	if(preg_match('/(?:\be[_\s-]?user[_\s-]?warning\b|\be[_\s-]?warning\b|\buser[_\s-]?warning\b|\bwarning\b)/i', $message)) {
+	$message = trim((string) $message);
+	$firstLine = trim(strtok($message, "\r\n") ?: $message);
+
+	//The diagnostic type at the start of an entry is authoritative. Searching
+	//the whole message can downgrade a fatal merely because its exception text
+	//or stack trace mentions E_WARNING, "notice", "deprecated", etc.
+	if(preg_match('/^(?:php\s+)?(?:fatal\s+error|recoverable\s+fatal|parse\s+error|core\s+error|compile\s+error|error|uncaught)\b/i', $firstLine)
+		|| preg_match('/^wordpress\s+database\s+error\b/i', $firstLine)) {
+		return 'critical';
+	}
+	if(preg_match('/^(?:php\s+)?(?:e[_\s-]?user[_\s-]?warning|e[_\s-]?warning|user[_\s-]?warning|warning)\b/i', $firstLine)) {
 		return 'warning';
 	}
-	if(preg_match('/(?:\be[_\s-]?user[_\s-]?notice\b|\be[_\s-]?notice\b|\buser[_\s-]?notice\b|\bnotice\b|\be[_\s-]?strict\b|\bphp\s+strict\s*:)/i', $message)) {
+	if(preg_match('/^(?:php\s+)?(?:e[_\s-]?user[_\s-]?notice|e[_\s-]?notice|user[_\s-]?notice|notice|e[_\s-]?strict|strict)\b/i', $firstLine)) {
 		return 'notice';
 	}
-	if(preg_match('/(?:\be[_\s-]?user[_\s-]?deprecated\b|\be[_\s-]?deprecated\b|\buser[_\s-]?deprecated\b|\bdeprecated\b)/i', $message)) {
+	if(preg_match('/^(?:php\s+)?(?:e[_\s-]?user[_\s-]?deprecated|e[_\s-]?deprecated|user[_\s-]?deprecated|deprecated)\b/i', $firstLine)) {
 		return 'deprecated';
 	}
 	return 'critical';
@@ -478,6 +487,16 @@ function codi_debug_update_monitor_state(array $state) {
 	return codi_debug_storage_update('codi_debug_error_monitor_state', $state);
 }
 
+function codi_debug_restore_channel_state($channel, array $previousState) {
+	$state = codi_debug_monitor_state();
+	if(array_key_exists($channel, $previousState)) {
+		$state[$channel] = $previousState[$channel];
+	} else {
+		unset($state[$channel]);
+	}
+	return codi_debug_update_monitor_state($state);
+}
+
 function codi_debug_prime_channel($channel) {
 	$info = codi_debug_error_log_info();
 	if(!$info['readable']) {
@@ -611,41 +630,100 @@ function codi_debug_group_entries(array $entries) {
 	return $groups;
 }
 
-function codi_debug_notification_body($title, array $entries) {
+function codi_debug_urgent_entry_lines(array $entries) {
+	$groups = codi_debug_group_entries($entries);
+	$lines = [];
+	foreach($groups as $group) {
+		list($firstLine) = codi_debug_error_message_parts($group['message']);
+		$when = $group['first'];
+		if($group['last'] && $group['last'] !== $group['first']) {
+			$when .= ' to ' . $group['last'];
+		}
+		$lines[] = sprintf(
+			'[%s] %dx | %s | %s',
+			strtoupper($group['severity']),
+			$group['count'],
+			implode(', ', array_keys($group['sites'])),
+			$when
+		);
+		$lines[] = $firstLine;
+	}
+	return $lines;
+}
+
+function codi_debug_severity_stats(array $entries) {
+	$stats = [];
+	foreach(codi_debug_severity_choices() as $severity => $label) {
+		$stats[$severity] = [
+			'label' => $label,
+			'entries' => 0,
+			'unique' => 0,
+		];
+	}
+
+	foreach($entries as $entry) {
+		$severity = $entry['severity'] ?? 'critical';
+		if(isset($stats[$severity])) {
+			$stats[$severity]['entries']++;
+		}
+	}
+	foreach(codi_debug_group_entries($entries) as $group) {
+		$severity = $group['severity'] ?? 'critical';
+		if(isset($stats[$severity])) {
+			$stats[$severity]['unique']++;
+		}
+	}
+	return $stats;
+}
+
+function codi_debug_notification_scope_line() {
+	return codi_debug_network_mode()
+		? 'Scope: WordPress network'
+		: 'Site: ' . (wp_parse_url(home_url('/'), PHP_URL_HOST) ?: home_url('/'));
+}
+
+function codi_debug_urgent_notification_body($title, array $entries, $intervalLabel) {
 	$groups = codi_debug_group_entries($entries);
 	$lines = [
 		$title,
 		'',
-		(codi_debug_network_mode() ? 'Scope: WordPress network' : 'Site: ' . (wp_parse_url(home_url('/'), PHP_URL_HOST) ?: home_url('/'))),
-		'Entries: ' . count($entries) . ' (' . count($groups) . ' unique)',
-		'Error log: ' . codi_debug_error_log_path(),
+		'View errors: ' . codi_debug_errors_url(),
+		'',
+		codi_debug_notification_scope_line(),
+		'Alert schedule: ' . $intervalLabel,
+		'New entries since previous alert: ' . count($entries) . ' (' . count($groups) . ' unique)',
 		'',
 	];
 
-	foreach(array_slice($groups, 0, 25) as $group) {
-		list($firstLine, $details) = codi_debug_error_message_parts($group['message']);
-		$lines[] = sprintf('[%s] %dx', strtoupper($group['severity']), $group['count']);
-		if($group['first']) $lines[] = 'First: ' . $group['first'];
-		if($group['last']) $lines[] = 'Last: ' . $group['last'];
-		$lines[] = 'Site: ' . implode(', ', array_keys($group['sites']));
-		$lines[] = 'Message: ' . $firstLine;
-		if($details !== '') {
-			$lines[] = 'Details:';
-			$lines[] = $details;
-		}
-		$lines[] = '';
+	foreach(codi_debug_urgent_entry_lines($entries) as $line) {
+		$lines[] = $line;
 	}
-
-	if(count($groups) > 25) {
-		$lines[] = sprintf('%d additional unique errors omitted from this email.', count($groups) - 25);
-		$lines[] = '';
-	}
-	$lines[] = 'View recent errors: ' . codi_debug_errors_url();
 	return implode("\n", $lines);
 }
 
-function codi_debug_send_notification($subject, $title, array $entries) {
-	if(!$entries) {
+function codi_debug_summary_notification_body($title, array $entries) {
+	$lines = [
+		$title,
+		'',
+		'View errors: ' . codi_debug_errors_url(),
+		'',
+		codi_debug_notification_scope_line(),
+		'Entries since previous summary: ' . count($entries),
+		'',
+	];
+	foreach(codi_debug_severity_stats($entries) as $stat) {
+		$lines[] = sprintf(
+			'%s: %d (%d unique)',
+			$stat['label'],
+			$stat['entries'],
+			$stat['unique']
+		);
+	}
+	return implode("\n", $lines);
+}
+
+function codi_debug_send_notification($subject, $body) {
+	if(trim((string) $body) === '') {
 		return false;
 	}
 	$settings = codi_debug_get_settings();
@@ -653,7 +731,7 @@ function codi_debug_send_notification($subject, $title, array $entries) {
 	if(!$recipient) {
 		return false;
 	}
-	$sent = wp_mail($recipient, $subject, codi_debug_notification_body($title, $entries));
+	$sent = wp_mail($recipient, $subject, $body);
 	if(!$sent) {
 		error_log('[Codi Debug] Unable to send PHP error notification email');
 	}
@@ -665,6 +743,7 @@ function codi_debug_run_alerts() {
 	if(empty($settings['notifications_enabled']) || empty($settings['alert_enabled'])) {
 		return;
 	}
+	$previousState = codi_debug_monitor_state();
 	$entries = codi_debug_filter_min_severity(
 		codi_debug_read_new_entries('alerts'),
 		$settings['alert_min_severity']
@@ -673,11 +752,14 @@ function codi_debug_run_alerts() {
 		return;
 	}
 	$host = codi_debug_network_mode() ? 'WordPress network' : (wp_parse_url(home_url('/'), PHP_URL_HOST) ?: 'WordPress');
-	codi_debug_send_notification(
+	$intervals = codi_debug_interval_choices();
+	$intervalLabel = $intervals[$settings['alert_interval']]['label'] ?? $settings['alert_interval'];
+	if(!codi_debug_send_notification(
 		'[Codi Debug] Urgent PHP errors on ' . $host,
-		'Urgent PHP errors detected',
-		$entries
-	);
+		codi_debug_urgent_notification_body('Urgent PHP errors detected', $entries, $intervalLabel)
+	)) {
+		codi_debug_restore_channel_state('alerts', $previousState);
+	}
 }
 
 function codi_debug_run_summary() {
@@ -685,14 +767,16 @@ function codi_debug_run_summary() {
 	if(empty($settings['notifications_enabled']) || empty($settings['summary_enabled'])) {
 		return;
 	}
+	$previousState = codi_debug_monitor_state();
 	$entries = codi_debug_read_new_entries('summary');
 	if(!$entries) {
 		return;
 	}
 	$host = codi_debug_network_mode() ? 'WordPress network' : (wp_parse_url(home_url('/'), PHP_URL_HOST) ?: 'WordPress');
-	codi_debug_send_notification(
+	if(!codi_debug_send_notification(
 		'[Codi Debug] PHP error summary for ' . $host,
-		'PHP error summary',
-		$entries
-	);
+		codi_debug_summary_notification_body('PHP error summary', $entries)
+	)) {
+		codi_debug_restore_channel_state('summary', $previousState);
+	}
 }

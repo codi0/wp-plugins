@@ -1,6 +1,11 @@
 <?php
 
 define('ABSPATH', __DIR__ . '/');
+function is_multisite() { return false; }
+function admin_url($path = '') { return 'https://example.test/wp-admin/' . ltrim($path, '/'); }
+function network_admin_url($path = '') { return admin_url($path); }
+function home_url($path = '') { return 'https://example.test/' . ltrim($path, '/'); }
+function wp_parse_url($url, $component = -1) { return parse_url($url, $component); }
 require_once dirname(__DIR__) . '/includes/error-monitor.php';
 
 function codi_debug_test_assert($condition, $message) {
@@ -51,6 +56,19 @@ codi_debug_test_assert(codi_debug_classify_severity('PHP USER_NOTICE: Example') 
 codi_debug_test_assert(codi_debug_classify_severity('PHP STRICT: Example') === 'notice', 'Legacy strict diagnostics must classify as notice.');
 codi_debug_test_assert(codi_debug_classify_severity('PHP USER_DEPRECATED: Example') === 'deprecated', 'User deprecations must classify as deprecated.');
 
+$severityInvariants = [
+	[ 'PHP Fatal error: Undefined constant E_WARNING', 'critical' ],
+	[ 'PHP Fatal error: Deprecated handler crashed', 'critical' ],
+	[ 'PHP Warning: Fatal fallback path was used', 'warning' ],
+	[ 'PHP Deprecated: warning wording is incidental', 'deprecated' ],
+];
+foreach($severityInvariants as [$message, $expected]) {
+	codi_debug_test_assert(
+		codi_debug_classify_severity($message) === $expected,
+		'The leading PHP diagnostic type must determine severity regardless of incidental severity words.'
+	);
+}
+
 $selected = codi_debug_select_error_log_path('/constant.log', '/setting.log', '/php.log', '/wp.log');
 codi_debug_test_assert($selected === [ 'path' => '/constant.log', 'source' => 'constant' ], 'Constant error log path must have highest precedence.');
 $selected = codi_debug_select_error_log_path('', '/setting.log', '/php.log', '/wp.log');
@@ -75,5 +93,32 @@ $dupe = $entries[0];
 $groups = codi_debug_group_entries([ $entries[0], $dupe, $entries[1] ]);
 codi_debug_test_assert(count($groups) === 2, 'Equal fingerprints must group together.');
 codi_debug_test_assert($groups[0]['count'] === 2, 'Grouped errors must retain occurrence counts.');
+
+$urgentLines = codi_debug_urgent_entry_lines([ $entries[0], $dupe, $entries[1] ]);
+$urgentText = implode("\n", $urgentLines);
+codi_debug_test_assert(strpos($urgentText, 'Stack trace:') === false, 'Urgent email entries must omit stack traces and continuation details.');
+codi_debug_test_assert(strpos($urgentText, '2x') !== false, 'Urgent email entries must retain grouped occurrence counts.');
+codi_debug_test_assert(strpos($urgentText, 'Example warning') !== false, 'Urgent email entries must retain the triggering error message.');
+codi_debug_test_assert(strpos($urgentText, 'Uncaught RuntimeException') !== false, 'Urgent email entries must include every unique triggering error.');
+
+$stats = codi_debug_severity_stats($entries);
+codi_debug_test_assert($stats['critical']['entries'] === 1 && $stats['critical']['unique'] === 1, 'Summary stats must count critical entries and unique errors.');
+codi_debug_test_assert($stats['warning']['entries'] === 1 && $stats['warning']['unique'] === 1, 'Summary stats must count warning entries and unique errors.');
+codi_debug_test_assert($stats['notice']['entries'] === 1 && $stats['notice']['unique'] === 1, 'Summary stats must count notice entries and unique errors.');
+codi_debug_test_assert($stats['deprecated']['entries'] === 1 && $stats['deprecated']['unique'] === 1, 'Summary stats must count deprecated entries and unique errors.');
+
+$urgentBody = codi_debug_urgent_notification_body('Urgent PHP errors detected', [ $entries[0], $entries[1] ], 'Every 5 minutes');
+$urgentBodyLines = explode("\n", $urgentBody);
+codi_debug_test_assert(strpos($urgentBodyLines[2], 'View errors: https://example.test/wp-admin/tools.php?page=codi-debug-errors') === 0, 'Urgent email must put the errors link near the top.');
+codi_debug_test_assert(strpos($urgentBody, 'Alert schedule: Every 5 minutes') !== false, 'Urgent email must state the configured alert cadence.');
+codi_debug_test_assert(strpos($urgentBody, 'Stack trace:') === false, 'Urgent email body must remain compact and omit continuation details.');
+
+$summaryBody = codi_debug_summary_notification_body('PHP error summary', $entries);
+$summaryBodyLines = explode("\n", $summaryBody);
+codi_debug_test_assert(strpos($summaryBodyLines[2], 'View errors: https://example.test/wp-admin/tools.php?page=codi-debug-errors') === 0, 'Summary email must put the errors link near the top.');
+codi_debug_test_assert(strpos($summaryBody, 'Critical: 1 (1 unique)') !== false, 'Summary email must show critical statistics.');
+codi_debug_test_assert(strpos($summaryBody, 'Warning: 1 (1 unique)') !== false, 'Summary email must show warning statistics.');
+codi_debug_test_assert(strpos($summaryBody, 'Example warning') === false, 'Summary email must not include specific error messages.');
+codi_debug_test_assert(strpos($summaryBody, 'RuntimeException') === false, 'Summary email must not include specific critical error details.');
 
 echo "PASS\n";
