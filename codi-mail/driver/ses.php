@@ -26,17 +26,35 @@ function codi_mail_ses_load_client() {
 }
 
 function codi_mail_ses_error_data($response) {
-	$data = [ 'provider' => 'ses' ];
+	$data = [
+		'provider' => 'ses',
+		'acceptance' => 'not_accepted',
+	];
 	$error = null;
 
 	if(is_object($response)) {
 		if(!empty($response->code)) {
 			$data['http_status'] = (int)$response->code;
 		}
+		if(!empty($response->request_id)) {
+			$data['request_id'] = (string)$response->request_id;
+		}
+		if(isset($response->duration_ms)) {
+			$data['duration_ms'] = max(0, (int)$response->duration_ms);
+		}
 		$error = $response->error ?? null;
 	} elseif(is_array($response)) {
 		if(!empty($response['code'])) {
 			$data['http_status'] = (int)$response['code'];
+		}
+		if(!empty($response['RequestId'])) {
+			$data['request_id'] = (string)$response['RequestId'];
+		}
+		if(isset($response['DurationMs'])) {
+			$data['duration_ms'] = max(0, (int)$response['DurationMs']);
+		}
+		if(array_key_exists('MessageId', $response) && empty($response['MessageId'])) {
+			$data['acceptance'] = 'unknown';
 		}
 		$error = $response['error'] ?? null;
 	}
@@ -50,6 +68,7 @@ function codi_mail_ses_error_data($response) {
 	}
 
 	if(!empty($error['curl'])) {
+		$data['acceptance'] = 'unknown';
 		$data['transport'] = 'curl';
 		$data['transport_code'] = isset($error['code']) ? (int)$error['code'] : 0;
 		$data['message'] = isset($error['message']) ? (string)$error['message'] : '';
@@ -69,7 +88,7 @@ function codi_mail_ses_error_data($response) {
 		$data['message'] = (string)($detail['Message'] ?? $detail['message'] ?? '');
 	}
 
-	if(!empty($error['RequestId'])) {
+	if(!empty($error['RequestId']) && empty($data['request_id'])) {
 		$data['request_id'] = (string)$error['RequestId'];
 	}
 
@@ -100,7 +119,7 @@ function codi_mail_ses_service() {
 	}
 
 	if(!$curlConfigured) {
-		Request::$curlOptions = apply_filters('codi_mail_ses_curl_options', array_replace([
+		Request::$curlOptions = apply_filters('codi_mail/ses_curl_options', array_replace([
 			CURLOPT_CONNECTTIMEOUT => 5,
 			CURLOPT_TIMEOUT => 20,
 			CURLOPT_NOSIGNAL => true,

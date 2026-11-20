@@ -125,6 +125,44 @@ namespace {
 	$GLOBALS['codi_mail_test_actions'] = [];
 	$GLOBALS['codi_mail_test_scheduled'] = [];
 
+	class CodiMailTestWpdb {
+		public $options = 'wp_options';
+
+		public function prepare($query, ...$args) {
+			return [ 'query' => $query, 'args' => $args ];
+		}
+
+		public function query($statement) {
+			if(!is_array($statement) || empty($statement['query']) || !isset($statement['args'])) {
+				return false;
+			}
+
+			$query = ltrim((string)$statement['query']);
+			$args = (array)$statement['args'];
+			if(stripos($query, 'UPDATE ') === 0 && count($args) === 3) {
+				list($value, $name, $expected) = $args;
+				if(($GLOBALS['codi_mail_test_options'][$name] ?? null) !== $expected) {
+					return 0;
+				}
+				$GLOBALS['codi_mail_test_options'][$name] = $value;
+				return 1;
+			}
+
+			if(stripos($query, 'DELETE ') === 0 && count($args) === 2) {
+				list($name, $expected) = $args;
+				if(($GLOBALS['codi_mail_test_options'][$name] ?? null) !== $expected) {
+					return 0;
+				}
+				unset($GLOBALS['codi_mail_test_options'][$name]);
+				return 1;
+			}
+
+			return false;
+		}
+	}
+
+	$GLOBALS['wpdb'] = new CodiMailTestWpdb();
+
 	function get_bloginfo($key) {
 		if($key === 'admin_email') {
 			return 'sender@example.test';
@@ -175,8 +213,20 @@ namespace {
 		return true;
 	}
 
+	function add_option($name, $value = '', $deprecated = '', $autoload = null) {
+		if(array_key_exists($name, $GLOBALS['codi_mail_test_options'])) {
+			return false;
+		}
+		$GLOBALS['codi_mail_test_options'][$name] = $value;
+		return true;
+	}
+
 	function delete_option($name) {
 		unset($GLOBALS['codi_mail_test_options'][$name]);
+		return true;
+	}
+
+	function wp_cache_delete($key, $group = '') {
 		return true;
 	}
 
@@ -431,6 +481,7 @@ namespace {
 				'error' => false,
 				'body' => (object)[ 'MessageId' => 'raw-message-id' ],
 				'request_id' => 'request-id',
+				'duration_ms' => 37,
 			];
 		}
 	};
@@ -440,10 +491,38 @@ namespace {
 	$rawResult = $rawClient->sendRawEmail($rawMessage, [ 'ToAddresses' => [ 'to@example.test' ] ]);
 	codi_mail_test_assert(
 		$rawResult['MessageId'] === 'raw-message-id'
+		&& $rawResult['RequestId'] === 'request-id'
+		&& $rawResult['DurationMs'] === 37
 		&& $capturingRequest->path === '/v2/email/outbound-emails'
 		&& !array_key_exists('FromEmailAddress', $capturingRequest->payload)
 		&& base64_decode($capturingRequest->payload['Content']['Raw']['Data']) === $rawMessage,
 		'SES raw send must preserve the MIME From header and must not override it with a bare FromEmailAddress.'
+	);
+
+	$transportFailure = codi_mail_ses_error_data((object)[
+		'code' => 0,
+		'request_id' => '',
+		'duration_ms' => 125,
+		'error' => [ 'curl' => true, 'code' => 28, 'message' => 'Operation timed out' ],
+	]);
+	$providerFailure = codi_mail_ses_error_data((object)[
+		'code' => 429,
+		'request_id' => 'rejected-request',
+		'duration_ms' => 41,
+		'error' => [
+			'curl' => false,
+			'Error' => [ 'Code' => 'TooManyRequestsException', 'Message' => 'Rate exceeded' ],
+			'RequestId' => 'rejected-request',
+		],
+	]);
+	codi_mail_test_assert(
+		$transportFailure['acceptance'] === 'unknown'
+		&& $transportFailure['transport'] === 'curl'
+		&& $transportFailure['duration_ms'] === 125
+		&& $providerFailure['acceptance'] === 'not_accepted'
+		&& $providerFailure['http_status'] === 429
+		&& $providerFailure['request_id'] === 'rejected-request',
+		'SES failures must distinguish ambiguous network outcomes from explicit provider rejection.'
 	);
 
 	$sesMailer = new Codi_Mail_SES_PHPMailer(true);
@@ -454,7 +533,10 @@ namespace {
 		'SES must build SMTP-style MIME and restore its custom transport.'
 	);
 
-	$sesMailer->codiSetTransportResult('ses', 'provider-id', '');
+	$sesMailer->codiSetTransportResult('ses', 'provider-id', '', [
+		'request_id' => 'request-id',
+		'duration_ms' => 37,
+	]);
 	$sesTransport = $sesMailer->codiTransportResult();
 	codi_mail_test_assert(
 		isset($sesTransport['provider_message_id'])
@@ -476,7 +558,9 @@ namespace {
 	codi_mail_test_assert(
 		count($sesSentEvents) === 1
 		&& $sesSentEvents[0][1][0]['message_id'] === ''
-		&& $sesSentEvents[0][1][0]['provider_message_id'] === 'provider-id',
+		&& $sesSentEvents[0][1][0]['provider_message_id'] === 'provider-id'
+		&& $sesSentEvents[0][1][0]['request_id'] === 'request-id'
+		&& $sesSentEvents[0][1][0]['duration_ms'] === 37,
 		'SES sent event must retain provider identity while refusing the overwritten PHPMailer Message-ID.'
 	);
 	$GLOBALS['phpmailer'] = $phpmailer;
@@ -537,6 +621,28 @@ namespace {
 		'Blank inbound secrets must retain the existing account credential.'
 	);
 
+	$pollLock = codi_mail_inbound_acquire_poll_lock('accountone', 60);
+	codi_mail_test_assert(
+		$pollLock !== '' && codi_mail_inbound_acquire_poll_lock('accountone', 60) === '',
+		'Only one poll may hold an inbound account lock at a time.'
+	);
+	codi_mail_test_assert(
+		codi_mail_inbound_release_poll_lock('accountone', 'not-the-owner') === false
+		&& codi_mail_inbound_release_poll_lock('accountone', $pollLock) === true,
+		'Inbound poll locks must only be releasable by their owner.'
+	);
+	$lockOption = codi_mail_inbound_poll_lock_option('accountone');
+	$GLOBALS['codi_mail_test_options'][$lockOption] = (time() - 1) . ':stale-token';
+	$replacementLock = codi_mail_inbound_acquire_poll_lock('accountone', 60);
+	codi_mail_test_assert(
+		$replacementLock !== '' && $replacementLock !== 'stale-token',
+		'An expired inbound poll lock must be replaceable atomically.'
+	);
+	codi_mail_test_assert(
+		codi_mail_inbound_release_poll_lock('accountone', $replacementLock) === true,
+		'Replaced inbound poll locks must release cleanly.'
+	);
+
 	update_option('codi_mail_graph_delta_accountone', 'stale-cursor', false);
 	codi_mail_inbound_health('accountone', [
 		'last_success_at' => '2026-01-01T00:00:00+00:00',
@@ -567,7 +673,7 @@ namespace {
 	$inboundTwo['provider_message_id'] = 'provider-2';
 	codi_mail_test_assert(codi_mail_inbound_dispatch($inboundTwo) === true, 'Missing Internet Message-ID must not collapse distinct provider messages.');
 	$inboundEvents = array_values(array_filter($GLOBALS['codi_mail_test_actions'], function($event) {
-		return $event[0] === 'codi_mail_inbound_message';
+		return $event[0] === 'codi_mail/inbound_message';
 	}));
 	codi_mail_test_assert(count($inboundEvents) === 2, 'Distinct provider messages must each reach consumers.');
 	codi_mail_test_assert(

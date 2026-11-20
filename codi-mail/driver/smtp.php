@@ -119,7 +119,7 @@ function codi_mail_smtp_init_phpmailer($phpmailer) {
 	$phpmailer->SMTPSecure = $opts['protocol'];
 	$phpmailer->SMTPAutoTLS = ($opts['protocol'] === 'tls');
 
-	$timeout = (int)apply_filters('codi_mail_smtp_timeout', 30, $phpmailer, $opts);
+	$timeout = (int)apply_filters('codi_mail/smtp_timeout', 30, $phpmailer, $opts);
 	$timeout = max(1, $timeout);
 	$phpmailer->Timeout = $timeout;
 

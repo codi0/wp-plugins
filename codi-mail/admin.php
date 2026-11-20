@@ -40,7 +40,7 @@ function codi_mail_admin_page_url($tab = 'outbound') {
 }
 
 function codi_mail_admin_render_outbound($page, array $opts, array $types, array $test) {
-	$fields = apply_filters('codi_mail_admin_fields', codi_mail_admin_fields($opts), $opts);
+	$fields = apply_filters('codi_mail/admin_fields', codi_mail_admin_fields($opts), $opts);
 
 	echo '<p>Send WordPress email through SMTP or the Amazon SES API.</p>' . "\n";
 	echo '<form name="mail_opts" method="post" action="' . esc_url(codi_mail_admin_page_url('outbound')) . '">' . "\n";
@@ -89,7 +89,7 @@ function codi_mail_admin_render_outbound($page, array $opts, array $types, array
 }
 
 function codi_mail_admin_render_inbound($page, array $accounts, array $health, $message = '', $error = '') {
-	echo '<p>Receive mail from one or more provider mailboxes and dispatch a normalized <code>codi_mail_inbound_message</code> event for consuming plugins.</p>' . "\n";
+	echo '<p>Receive mail from one or more provider mailboxes and dispatch a normalized <code>codi_mail/inbound_message</code> event for consuming plugins.</p>' . "\n";
 
 	if($message !== '') {
 		echo '<div class="notice notice-success inline"><p>' . esc_html($message) . '</p></div>';
@@ -234,6 +234,8 @@ function codi_mail_admin_options() {
 		$health = codi_mail_inbound_health();
 		if(is_wp_error($result)) {
 			$inboundError = $result->get_error_message();
+		} elseif(!empty($result['locked'])) {
+			$notice = 'Mailbox check already in progress.';
 		} else {
 			$notice = sprintf(
 				'Mailbox checked. %d message(s) dispatched.',

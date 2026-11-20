@@ -147,7 +147,7 @@ function codi_mail_inbound_accounts(?array $accounts = null) {
 			$existing = isset($current[$id]) && is_array($current[$id]) ? $current[$id] : [];
 			$clean[$id] = codi_mail_inbound_sanitize_account($account, $existing, $id);
 		}
-		$clean = apply_filters('codi_mail_inbound_accounts', $clean);
+		$clean = apply_filters('codi_mail/inbound_accounts', $clean);
 		$resetState = [];
 		foreach($clean as $id => $account) {
 			$existing = isset($current[$id]) && is_array($current[$id]) ? $current[$id] : [];
@@ -261,6 +261,76 @@ function codi_mail_inbound_health($accountId = null, $update = null) {
 	return $current;
 }
 
+function codi_mail_inbound_poll_lock_option($accountId) {
+	return 'codi_mail_inbound_poll_lock_' . sanitize_key((string)$accountId);
+}
+
+function codi_mail_inbound_acquire_poll_lock($accountId, $ttl = 900) {
+	$accountId = sanitize_key((string)$accountId);
+	if($accountId === '') {
+		return '';
+	}
+
+	$ttl = max(60, (int)$ttl);
+	$option = codi_mail_inbound_poll_lock_option($accountId);
+	$token = str_replace('-', '', wp_generate_uuid4());
+	$value = (time() + $ttl) . ':' . $token;
+
+	if(add_option($option, $value, '', 'no')) {
+		return $token;
+	}
+
+	$current = (string)get_option($option, '');
+	$parts = explode(':', $current, 2);
+	$expiresAt = isset($parts[0]) ? (int)$parts[0] : 0;
+	if($expiresAt >= time()) {
+		return '';
+	}
+
+	global $wpdb;
+	$updated = $wpdb->query($wpdb->prepare(
+		"UPDATE {$wpdb->options} SET option_value = %s WHERE option_name = %s AND option_value = %s",
+		$value,
+		$option,
+		$current
+	));
+	if($updated !== 1) {
+		return '';
+	}
+
+	wp_cache_delete($option, 'options');
+	return $token;
+}
+
+function codi_mail_inbound_release_poll_lock($accountId, $token) {
+	$accountId = sanitize_key((string)$accountId);
+	$token = (string)$token;
+	if($accountId === '' || $token === '') {
+		return false;
+	}
+
+	$option = codi_mail_inbound_poll_lock_option($accountId);
+	$current = (string)get_option($option, '');
+	$parts = explode(':', $current, 2);
+	$currentToken = isset($parts[1]) ? (string)$parts[1] : '';
+	if($currentToken === '' || !hash_equals($currentToken, $token)) {
+		return false;
+	}
+
+	global $wpdb;
+	$deleted = $wpdb->query($wpdb->prepare(
+		"DELETE FROM {$wpdb->options} WHERE option_name = %s AND option_value = %s",
+		$option,
+		$current
+	));
+	if($deleted === 1) {
+		wp_cache_delete($option, 'options');
+		return true;
+	}
+
+	return false;
+}
+
 function codi_mail_inbound_normalize_message(array $message) {
 	$defaults = [
 		'inbound_account_id' => '', 'inbound_account_label' => '', 'mailbox' => '',
@@ -305,12 +375,22 @@ function codi_mail_inbound_dispatch(array $message) {
 		throw new InvalidArgumentException('Inbound mail requires account, mailbox, provider and provider_message_id.');
 	}
 
-	do_action('codi_mail_inbound_message', $message);
+	do_action('codi_mail/inbound_message', $message);
 	codi_mail_inbound_health($message['inbound_account_id'], [ 'last_dispatched_at' => gmdate('c') ]);
 	return true;
 }
 
 function codi_mail_inbound_poll_account(array $account) {
+	$accountId = sanitize_key((string)($account['id'] ?? ''));
+	if($accountId === '') {
+		throw new RuntimeException('Inbound mail account id is missing.');
+	}
+
+	$lockToken = codi_mail_inbound_acquire_poll_lock($accountId);
+	if($lockToken === '') {
+		return [ 'dispatched' => 0, 'locked' => true ];
+	}
+
 	$provider = sanitize_key((string)($account['provider'] ?? ''));
 	try {
 		if($provider !== 'graph') {
@@ -334,6 +414,8 @@ function codi_mail_inbound_poll_account(array $account) {
 			'consecutive_failures' => (int)($currentHealth['consecutive_failures'] ?? 0) + 1,
 		]);
 		throw $e;
+	} finally {
+		codi_mail_inbound_release_poll_lock($accountId, $lockToken);
 	}
 }
 
@@ -355,6 +437,7 @@ function codi_mail_inbound_poll($accountId = '') {
 	$result = [
 		'accounts' => 0,
 		'failed' => 0,
+		'locked' => 0,
 		'dispatched' => 0,
 	];
 
@@ -366,6 +449,10 @@ function codi_mail_inbound_poll($accountId = '') {
 		$result['accounts']++;
 		try {
 			$accountResult = codi_mail_inbound_poll_account($account);
+			if(!empty($accountResult['locked'])) {
+				$result['locked']++;
+				continue;
+			}
 			$result['dispatched'] += (int)($accountResult['dispatched'] ?? 0);
 		} catch(Throwable $e) {
 			$result['failed']++;

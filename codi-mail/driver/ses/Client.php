@@ -55,6 +55,7 @@ class Client {
 		return [
 			'MessageId' => isset($response->body->MessageId) ? (string)$response->body->MessageId : '',
 			'RequestId' => isset($response->request_id) ? (string)$response->request_id : '',
+			'DurationMs' => isset($response->duration_ms) ? max(0, (int)$response->duration_ms) : 0,
 		];
 	}
 

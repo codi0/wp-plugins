@@ -17,13 +17,19 @@ class Codi_Mail_PHPMailer extends PHPMailer\PHPMailer\PHPMailer {
 		$this->codiTransportResult = [];
 	}
 
-	public function codiSetTransportResult($provider, $providerMessageId = '', $messageId = null) {
+	public function codiSetTransportResult($provider, $providerMessageId = '', $messageId = null, array $metadata = []) {
 		$this->codiTransportResult = [
 			'provider' => (string)$provider,
 			'provider_message_id' => (string)$providerMessageId,
 		];
 		if($messageId !== null) {
 			$this->codiTransportResult['message_id'] = (string)$messageId;
+		}
+		if(!empty($metadata['request_id'])) {
+			$this->codiTransportResult['request_id'] = (string)$metadata['request_id'];
+		}
+		if(array_key_exists('duration_ms', $metadata)) {
+			$this->codiTransportResult['duration_ms'] = max(0, (int)$metadata['duration_ms']);
 		}
 	}
 

@@ -35,7 +35,10 @@ class Codi_Mail_SES_PHPMailer extends Codi_Mail_PHPMailer {
 			);
 
 			if(is_array($response) && !empty($response['MessageId'])) {
-				$this->codiSetTransportResult('ses', (string)$response['MessageId'], '');
+				$this->codiSetTransportResult('ses', (string)$response['MessageId'], '', [
+					'request_id' => isset($response['RequestId']) ? (string)$response['RequestId'] : '',
+					'duration_ms' => isset($response['DurationMs']) ? (int)$response['DurationMs'] : 0,
+				]);
 				return true;
 			}
 
@@ -50,6 +53,7 @@ class Codi_Mail_SES_PHPMailer extends Codi_Mail_PHPMailer {
 		} catch(Throwable $e) {
 			self::$last_provider_error = [
 				'provider' => 'ses',
+				'acceptance' => 'not_accepted',
 				'exception_class' => get_class($e),
 				'exception_code' => $e->getCode(),
 			];

@@ -1,16 +1,16 @@
 # Codi Mail Inbound Mail Plan
 
 **Status:** Source implemented; live Microsoft Graph ingress and the full CRM external-reply loop are validated on BHI DEV; production mailbox separation still pending  
-**Current plugin version:** 1.2.2
+**Current plugin version:** 1.2.5
 
 ## Current implementation handoff
 
-Codi Mail 1.2.2 is deployed on BHI DEV and Microsoft Graph ingress has been proven with a real mailbox. For CRM direct replies, Codi must poll the same mailbox configured as FluentCRM's global From email; the external Contact must use a different mailbox. DEV is configured for that topology. The CRM-side continuation record is `mwf-plugins/mwf/modules/crm-wp/docs/DIRECT_EMAIL_REPLY_HANDOFF.md`.
+Codi Mail 1.2.2 was the BHI DEV build used for the initial live Microsoft Graph validation; the current source is 1.2.5. For CRM direct replies, Codi must poll the same mailbox configured as FluentCRM's global From email; the external Contact must use a different mailbox. DEV is configured for that topology. The CRM-side continuation record is `mwf-plugins/mwf/modules/crm-wp/docs/DIRECT_EMAIL_REPLY_HANDOFF.md`.
 
 Current public contracts are live, not proposals:
 
 - outbound success: `do_action('codi_mail/sent', $result)`;
-- inbound normalized message: `do_action('codi_mail_inbound_message', $message)`.
+- inbound normalized message: `do_action('codi_mail/inbound_message', $message)`.
 
 Current Graph behavior:
 
@@ -23,6 +23,7 @@ Current Graph behavior:
 - changing an account's provider or mailbox also clears that account's cursor and health state;
 - transient provider/network errors increment `consecutive_failures`; a successful poll resets it;
 - account failures are isolated when cron polls multiple enabled accounts.
+- each account poll is serialized by an expiring per-account mutex, so cron and a manual check do not process the same delta session concurrently; an overlapping attempt is reported as already in progress rather than as a provider failure.
 
 Validated on BHI DEV:
 
@@ -114,7 +115,7 @@ Fluent Support also implements email piping, but its hosted Lambda forwarding ar
 
 Expose the documented payload through the stable public action:
 
-`do_action('codi_mail_inbound_message', $message)`
+`do_action('codi_mail/inbound_message', $message)`
 
 The payload should be application-neutral and include at least:
 
@@ -222,11 +223,15 @@ should expose, where available:
 - transport/provider;
 - MIME Internet Message-ID where authoritatively known after transport;
 - provider message id;
+- provider request id where available;
+- provider request duration in milliseconds where available;
 - recipient addresses;
 - sender;
 - timestamp.
 
 Codi Mail receives the SES `MessageId` internally and exposes that provider id rather than forcing consumers to infer delivery identity.
+
+SES failures also enrich `wp_mail_failed` with a provider-neutral acceptance classification. A provider HTTP rejection is `not_accepted`; a cURL/network failure whose provider-acceptance outcome cannot be proven is `unknown`. Consumers must not convert `unknown` into confirmed non-delivery or automatically retry it as though SES definitely rejected the message.
 
 For Amazon SES raw sending, the provider may replace the MIME `Message-ID`. Codi therefore exposes the SES provider message id but leaves the RFC `message_id` blank when the post-provider RFC id is not authoritatively known. Consumers must not treat PHPMailer's pre-transport id as the delivered RFC id.
 
@@ -272,6 +277,7 @@ Core invariants should include:
 - an inbound provider failure cannot break normal WordPress outbound mail.
 - changing an inbound account's provider or mailbox resets that account's cursor and health state;
 - transient poll failures increment consecutive failure health without disabling configuration, and a later successful poll resets the count;
+- overlapping polls for one inbound account cannot both enter provider processing, and releasing one poll cannot release another poll's lock;
 - SES sent events retain the provider message id while refusing to expose PHPMailer's overwritten pre-transport Message-ID as authoritative.
 
 ## Continuation checklist

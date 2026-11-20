@@ -93,7 +93,11 @@ class Request {
 
 		curl_setopt($curl, CURLOPT_HTTPHEADER, $headers);
 
-		if(curl_exec($curl)) {
+		$startedAt = microtime(true);
+		$executed = curl_exec($curl);
+		$this->response->duration_ms = max(0, (int)round((microtime(true) - $startedAt) * 1000));
+
+		if($executed) {
 			$this->response->code = (int)curl_getinfo($curl, CURLINFO_HTTP_CODE);
 		} else {
 			$this->response->error = [
@@ -259,6 +263,7 @@ class Request {
 			'error' => false,
 			'headers' => [],
 			'request_id' => '',
+			'duration_ms' => 0,
 		];
 	}
 

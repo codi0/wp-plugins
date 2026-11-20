@@ -3,7 +3,7 @@
 /*
 Plugin Name: Codi Mail
 Description: Send WordPress email through SMTP or Amazon SES and optionally receive Microsoft 365 mail through Microsoft Graph.
-Version: 1.2.4
+Version: 1.2.5
 Requires at least: 5.7
 Requires PHP: 7.1
 Author: codi0
@@ -14,7 +14,7 @@ defined('ABSPATH') || exit;
 
 define('CODI_MAIL_PLUGIN_FILE', __FILE__);
 define('CODI_MAIL_PLUGIN_NAME', basename(__DIR__));
-define('CODI_MAIL_VERSION', '1.2.4');
+define('CODI_MAIL_VERSION', '1.2.5');
 
 function codi_mail_defaults() {
 	return [
@@ -285,6 +285,13 @@ function codi_mail_emit_sent($mail_data) {
 		))),
 		'sent_at' => gmdate('c'),
 	];
+
+	if(!empty($transport['request_id'])) {
+		$result['request_id'] = (string)$transport['request_id'];
+	}
+	if(array_key_exists('duration_ms', $transport)) {
+		$result['duration_ms'] = max(0, (int)$transport['duration_ms']);
+	}
 
 	do_action('codi_mail/sent', $result);
 }
